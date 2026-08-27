@@ -16,3 +16,12 @@ docs/participant_release_checklist.md
 tests/test_5core_builder.py
 tests/test_organizer_pipeline.py
 *.log
+
+# --- ByteMe additions ---
+# Never commit the catalog in any form (CLAUDE.md section 8).
+data/catalog.jsonl.gz
+# Experiment outputs are per-person and would collide constantly. day0.json is
+# the exception: it is the shared reference baseline that src/eval/run.py diffs
+# against, so it is tracked deliberately.
+runs/*
+!runs/day0.json
