@@ -45,6 +45,12 @@ class Agent:
     ASK_POLICY = "priority"
     # Dynamic list-length schedule (see src/dialogue/truncation).
     TRUNCATE = True
+    # Dead asks tolerated before falling back to `other` (see src/dialogue/ask).
+    OTHER_FALLBACK_AFTER = 1
+    # Truncation schedule knobs (see src/dialogue/truncation), swept per route.
+    TRUNC_EARLY_TURNS = 2
+    TRUNC_NARROW_INFO = 2
+    TRUNC_MEDIUM_INFO = 4
 
     def __init__(self, catalog_path: str = "data/catalog.jsonl") -> None:
         # ~15s, once per process. The evaluator constructs one Agent for all
@@ -72,12 +78,15 @@ class Agent:
                                    state.constraints, state.budget),
         )
 
-        k = list_length(state, turn, top_k, enabled=self.TRUNCATE)
+        k = list_length(state, turn, top_k, enabled=self.TRUNCATE,
+                        early_turns=self.TRUNC_EARLY_TURNS,
+                        narrow_info=self.TRUNC_NARROW_INFO,
+                        medium_info=self.TRUNC_MEDIUM_INFO)
         recommendations = [{"parent_asin": pid} for pid in ranked[:k]]
 
         # Chosen after ranking; the attribute asked this turn only affects the
         # customer's NEXT message, never this turn's recommendations.
-        ask = next_ask(state, self.ASK_POLICY)
+        ask = next_ask(state, self.ASK_POLICY, self.OTHER_FALLBACK_AFTER)
 
         return {
             "message": f"Could you tell me about your {ask} preference?",

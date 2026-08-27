@@ -25,26 +25,34 @@ NARROW_K = 3
 MEDIUM_K = 5
 EARLY_TURNS = 2
 NARROW_INFO = 2
-MEDIUM_INFO = 3
+MEDIUM_INFO = 4   # swept: 3 -> 0.8541, 4 -> 0.8556, 5 -> 0.8513
+
+# The session is scored over at most 10 turns (evaluator MAX_TURNS). On the
+# last one there is no future turn to save the list for, and a miss is worth
+# exactly zero, so always expose everything. CLAUDE.md section 6.
+FINAL_TURN = 10
 
 
-def list_length(state: SessionState, turn: int, top_k: int, enabled: bool = True) -> int:
+def list_length(state: SessionState, turn: int, top_k: int, enabled: bool = True,
+                early_turns: int = EARLY_TURNS, narrow_info: int = NARROW_INFO,
+                medium_info: int = MEDIUM_INFO) -> int:
     """Return the number of recommendations to expose this turn.
 
-    WARNING: there is no turn-10 escape hatch here. The schedule keys off
-    disclosure count alone, so a session where the customer keeps refusing to
-    disclose (boundary: "I don't have a preference for X") can still be
-    truncated to 5 on the FINAL turn. CLAUDE.md section 6 requires the opposite
-    -- "always return the full 10 on turn 10" -- because a miss is worth
-    exactly zero. Adding that guard is a behavioural change and must be
-    measured on its own run; it is a prime suspect for the boundary subgroup
-    sitting at 0.60 hit rate.
+    Holding back a short list is only ever a bet that a LATER turn will pay
+    more. On the final turn that bet cannot pay off, so the guard below always
+    returns the full list there regardless of how little was disclosed.
+
+    Without it, a customer who keeps refusing to disclose (boundary:
+    "I don't have a preference for X") never clears MEDIUM_INFO and is still
+    truncated to 5 on turn 10, throwing away ranks 6-10 for nothing.
     """
     if not enabled:
         return top_k
+    if turn >= FINAL_TURN:
+        return top_k
     info = state.information_count
-    if turn <= EARLY_TURNS and info < NARROW_INFO:
+    if turn <= early_turns and info < narrow_info:
         return NARROW_K
-    if info < MEDIUM_INFO:
+    if info < medium_info:
         return MEDIUM_K
     return top_k

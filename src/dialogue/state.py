@@ -36,6 +36,21 @@ class SessionState:
     budget: float | None = None
     profile: dict = field(default_factory=dict)
 
+    # Attributes the customer has told us yield nothing more. Two distinct
+    # signals, both meaning "stop spending turns here":
+    #   "I don't have an additional preference for X."        -> exhausted
+    #   "I don't have a preference for X; use your judgment." -> refused
+    # The second also identifies the session as `boundary` (evaluator line
+    # 169); it fires at most once per session.
+    dead_attributes: set[str] = field(default_factory=set)
+    boundary_signal: bool = False
+
+    @property
+    def dead_ask_count(self) -> int:
+        """How many asks have come back empty. Evidence that the specific
+        attribute space is exhausted and only `other` will yield anything."""
+        return len(self.dead_attributes)
+
     @property
     def information_count(self) -> int:
         """How much the customer has actually disclosed. Drives truncation."""

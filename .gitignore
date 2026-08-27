@@ -25,3 +25,6 @@ data/catalog.jsonl.gz
 # against, so it is tracked deliberately.
 runs/*
 !runs/day0.json
+
+# Internal strategy notes — this repo is PUBLIC. Keep them out of it.
+/CLAUDE.md

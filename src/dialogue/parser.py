@@ -26,46 +26,39 @@ CATEGORY_RE = re.compile(
     r"i'm looking for (.+?)(?:, but i'm still exploring\.?|\. |$)", re.I
 )
 
-# Detection is done against the lowercased message; the split is done against
-# the original-case message. The two literals must therefore agree in case with
-# the evaluator's own template, or the split silently yields a 1-element list.
-KEY_REQUIREMENT_TEST = "a key requirement is:"
-KEY_REQUIREMENT_SPLIT = "A key requirement is:"   # evaluator line 159, capital A
-STILL_EXPLORING = "still exploring"               # evaluator line 163
-WHAT_MATTERS_TEST = "what matters is:"
-WHAT_MATTERS_SPLIT = "what matters is:"           # evaluator line 185, mid-sentence
-WHAT_I_NEED_TEST = "what i need is:"
+# Markers are matched case-insensitively via _after(), so a capitalisation
+# change in the organizer's templates cannot silently break parsing. The
+# previous code tested a lowercased message but split the original-case
+# message on a case-specific literal; when the two disagreed (evaluator line
+# 85 emits "What I need is:" with a capital W) str.split returned a 1-element
+# list and the [1] index raised IndexError on every intent_override session.
+KEY_REQUIREMENT = "a key requirement is:"
+STILL_EXPLORING = "still exploring"            # evaluator line 163
+WHAT_MATTERS = "what matters is:"              # evaluator line 185
+WHAT_I_NEED = "what i need is:"                # evaluator line 85
 
-# ---------------------------------------------------------------------------
-# KNOWN DEFECT -- preserved verbatim during the step-2 refactor, do not "fix"
-# this in passing.
-#
-# The evaluator emits (line 85):
-#     "Actually, ignore my earlier preference. What I need is: {new_value}."
-# with a capital W. The literal below has a lowercase w, so the membership test
-# on the lowercased message PASSES while the split on the original-case message
-# FINDS NOTHING -- str.split returns a 1-element list and the [1] index raises
-# IndexError.
-#
-# Consequences on every intent_override session (15% of the set):
-#   * respond() raises; the evaluator catches it (line 240) and substitutes an
-#     empty response, so that whole turn returns zero recommendations.
-#   * the override's new_value is never appended to state, so the constraint
-#     the customer just asked for is lost for the rest of the session.
-#
-# This is strictly worse than CLAUDE.md backlog item 3, which describes the
-# override as failing to EVICT old constraints. It also fails to ADD the new
-# one. Fixing it is a one-character change (w -> W) but it is a BEHAVIOURAL
-# change and must be measured on its own run before it ships.
-# ---------------------------------------------------------------------------
-WHAT_I_NEED_SPLIT = "what I need is:"
+# "I don't have an additional preference for <attr>."          evaluator L183
+NO_ADDITIONAL_RE = re.compile(r"don'?t have an additional preference for (\w+)", re.I)
+# "I don't have a preference for <attr>; please use your judgment."  L169
+# Fires at most once per session and only for `boundary` scenarios, so it is
+# a free, reliable scenario detector as well as a "stop asking" signal.
+NO_PREFERENCE_RE = re.compile(r"don'?t have a preference for (\w+); please use your judgment", re.I)
+
+
+def _after(text: str, low: str, marker: str) -> str | None:
+    """Text following `marker`, matched case-insensitively. None if absent.
+
+    `low` must be `text.lower()`; both are passed in so callers that already
+    lowercased do not do it twice per turn.
+    """
+    position = low.find(marker)
+    if position < 0:
+        return None
+    return text[position + len(marker):].strip().rstrip(".")
 
 
 def parse(state: SessionState, message: str, turn: int) -> None:
-    """Fold one customer message into `state`. Mutates in place.
-
-    Raises IndexError on intent-override turns; see KNOWN DEFECT above.
-    """
+    """Fold one customer message into `state`. Mutates in place."""
     text = message.strip()
     low = text.lower()
 
@@ -75,12 +68,22 @@ def parse(state: SessionState, message: str, turn: int) -> None:
         # the opener never carries a "budget around $X" clause.
         return
 
-    if WHAT_MATTERS_TEST in low:
+    boundary = NO_PREFERENCE_RE.search(text)
+    if boundary:
+        state.dead_attributes.add(boundary.group(1).lower())
+        state.boundary_signal = True
+    exhausted = NO_ADDITIONAL_RE.search(text)
+    if exhausted:
+        state.dead_attributes.add(exhausted.group(1).lower())
+
+    tail = _after(text, low, WHAT_MATTERS)
+    if tail is not None:
         # "For that, what matters is: A; B." -> two separate constraints.
-        tail = text.split(WHAT_MATTERS_SPLIT, 1)[1].strip().rstrip(".")
         state.constraints.extend([c.strip() for c in tail.split(";") if c.strip()])
-    elif WHAT_I_NEED_TEST in low:
-        state.constraints.append(text.split(WHAT_I_NEED_SPLIT, 1)[1].strip().rstrip("."))
+    else:
+        new_value = _after(text, low, WHAT_I_NEED)
+        if new_value:
+            state.constraints.append(new_value)
 
     _refresh_budget(state)
 
@@ -91,8 +94,9 @@ def _parse_opening(state: SessionState, text: str, low: str) -> None:
     if match:
         state.category = match.group(1).strip().rstrip(".")
 
-    if KEY_REQUIREMENT_TEST in low:
-        state.constraints.append(text.split(KEY_REQUIREMENT_SPLIT, 1)[1].strip().rstrip("."))
+    requirement = _after(text, low, KEY_REQUIREMENT)
+    if requirement:
+        state.constraints.append(requirement)
     elif STILL_EXPLORING not in low:
         # intent_override openers (evaluator line 162) carry a bare preference
         # clause after the first sentence. Browsing openers carry none.
