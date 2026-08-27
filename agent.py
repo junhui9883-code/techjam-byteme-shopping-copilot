@@ -54,6 +54,12 @@ class Agent:
     # Rank on the raw transcript when template parsing recognises nothing.
     # Paraphrase insurance; see src/eval/paraphrase.py.
     RAW_FALLBACK = True
+    # FTS5 recall weight set (see src/retrieval/recall.py WEIGHT_SETS).
+    RECALL_WEIGHTS = "default"
+    # Candidate pool size handed to the reranker (see src/retrieval/recall.py).
+    RECALL_LIMIT = 400
+    # Lexical-overlap tier beneath the exact-phrase bonus (paraphrase insurance).
+    PHRASE_OVERLAP = True
 
     def __init__(self, catalog_path: str = "data/catalog.jsonl") -> None:
         # ~15s, once per process. The evaluator constructs one Agent for all
@@ -74,13 +80,15 @@ class Agent:
 
         fallback = state.transcript if (self.RAW_FALLBACK and state.parsed_nothing) else None
         pool = candidates(self.index, state.category, state.constraints,
-                          fallback_text=fallback)
+                          limit=self.RECALL_LIMIT,
+                          fallback_text=fallback, weights=self.RECALL_WEIGHTS)
         # sorted() is stable, so products the ranker cannot separate keep their
         # FTS5 recall order. Keeps ties reproducible across runs.
         ranked = sorted(
             pool,
             key=lambda pid: -score(self.index, pid, state.category,
-                                   state.constraints, state.budget, fallback),
+                                   state.constraints, state.budget, fallback,
+                                   self.PHRASE_OVERLAP),
         )
 
         k = list_length(state, turn, top_k, enabled=self.TRUNCATE,

@@ -32,29 +32,50 @@ CATEGORY_RE = re.compile(
 # message on a case-specific literal; when the two disagreed (evaluator line
 # 85 emits "What I need is:" with a capital W) str.split returned a 1-element
 # list and the [1] index raised IndexError on every intent_override session.
-KEY_REQUIREMENT = "a key requirement is:"
+KEY_REQUIREMENT = "a key requirement is"
 STILL_EXPLORING = "still exploring"            # evaluator line 163
-WHAT_MATTERS = "what matters is:"              # evaluator line 185
-WHAT_I_NEED = "what i need is:"                # evaluator line 85
+WHAT_MATTERS = "what matters is"               # evaluator line 185
+WHAT_I_NEED = "what i need is"                 # evaluator line 85
 
 # "I don't have an additional preference for <attr>."          evaluator L183
 NO_ADDITIONAL_RE = re.compile(r"don'?t have an additional preference for (\w+)", re.I)
 # "I don't have a preference for <attr>; please use your judgment."  L169
 # Fires at most once per session and only for `boundary` scenarios, so it is
 # a free, reliable scenario detector as well as a "stop asking" signal.
-NO_PREFERENCE_RE = re.compile(r"don'?t have a preference for (\w+); please use your judgment", re.I)
+NO_PREFERENCE_RE = re.compile(r"don'?t have a preference for (\w+)\W+please use your judgment", re.I)
+
+
+# Markers are stored WITHOUT trailing punctuation and matched with the colon
+# optional, because punctuation is incidental to the phrase. Dropped colons
+# cost 26% of the score under the step-4 stress harness (only-punct: 73.6%
+# retained), and hurried real typing drops them too. Interior whitespace is
+# matched flexibly for the same reason.
+_MARKER_CACHE: dict[str, re.Pattern] = {}
+
+
+def _marker_re(marker: str) -> re.Pattern:
+    """Compile (and cache) a punctuation-tolerant matcher for a marker phrase."""
+    pattern = _MARKER_CACHE.get(marker)
+    if pattern is None:
+        pattern = re.compile(
+            r"\s+".join(re.escape(word) for word in marker.split()) + r"\s*:?\s*",
+            re.I,
+        )
+        _MARKER_CACHE[marker] = pattern
+    return pattern
 
 
 def _after(text: str, low: str, marker: str) -> str | None:
-    """Text following `marker`, matched case-insensitively. None if absent.
+    """Text following `marker`, matched case-insensitively and tolerant of a
+    missing colon or irregular spacing. None if the marker is absent.
 
-    `low` must be `text.lower()`; both are passed in so callers that already
-    lowercased do not do it twice per turn.
+    `low` is accepted for call-site symmetry; matching is done on `text` with
+    re.I so the two can never disagree the way they did before.
     """
-    position = low.find(marker)
-    if position < 0:
+    match = _marker_re(marker).search(text)
+    if match is None:
         return None
-    return text[position + len(marker):].strip().rstrip(".")
+    return text[match.end():].strip().rstrip(".")
 
 
 def parse(state: SessionState, message: str, turn: int) -> None:

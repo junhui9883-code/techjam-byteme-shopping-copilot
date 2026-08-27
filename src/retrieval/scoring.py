@@ -43,6 +43,16 @@ PHRASE_PREFIX_LEN = 40
 BONUS_PHRASE_EXACT = 14.0
 BONUS_PHRASE_PREFIX = 7.0
 
+# Third tier, below the two substring tiers: weighted lexical overlap.
+# CLAUDE.md section 5 prescribes exactly this -- keep exact matching as a bonus
+# term, but put a scorer underneath it that survives rewording. A contiguous
+# substring match is destroyed by a single inserted word ("100% cotton" vs
+# "100% um, cotton"), whereas token overlap degrades smoothly. Awarded in
+# proportion to how much of the constraint is present, so it can never
+# outrank a genuine exact match.
+BONUS_PHRASE_OVERLAP = 8.0
+MIN_OVERLAP_TERMS = 2
+
 # Price proximity. The brief states the target's own price, so a near-exact
 # match is very strong evidence; being far off is mild evidence against.
 PRICE_NEAR = 0.02
@@ -57,14 +67,14 @@ _WS_RE = re.compile(r"\s+")
 
 def score(index: CatalogIndex, pid: str, category: str,
           constraints: list[str], budget: float | None,
-          fallback_text: list[str] | None = None) -> float:
+          fallback_text: list[str] | None = None, overlap: bool = True) -> float:
     """Relevance of one product against the accumulated session state."""
     if not category and not constraints and fallback_text:
         # Nothing parsed: rank on the raw transcript rather than not at all.
         return _bm25(index, pid, " ".join(fallback_text), [])
     return (
         _bm25(index, pid, category, constraints)
-        + _phrase_bonus(index, pid, constraints)
+        + _phrase_bonus(index, pid, constraints, overlap)
         + _price_bonus(index, pid, budget)
     )
 
@@ -82,18 +92,31 @@ def _bm25(index: CatalogIndex, pid: str, category: str, constraints: list[str]) 
     return total
 
 
-def _phrase_bonus(index: CatalogIndex, pid: str, constraints: list[str]) -> float:
+def _phrase_bonus(index: CatalogIndex, pid: str, constraints: list[str],
+                  overlap: bool = True) -> float:
     fields = index.ftext[pid]
     # Only the three spec-bearing fields. Matching a constraint inside
     # `description` marketing copy is far weaker evidence.
     blob = fields["features"] + " " + fields["details"] + " " + fields["title"]
+    blob_terms: set[str] | None = None
     total = 0.0
     for constraint in constraints:
         normalised = _WS_RE.sub(" ", constraint.lower()).strip()
-        if len(normalised) > MIN_PHRASE_LEN and normalised in blob:
+        if len(normalised) <= MIN_PHRASE_LEN:
+            continue
+        if normalised in blob:
             total += BONUS_PHRASE_EXACT
-        elif len(normalised) > MIN_PHRASE_LEN and normalised[:PHRASE_PREFIX_LEN] in blob:
+        elif normalised[:PHRASE_PREFIX_LEN] in blob:
             total += BONUS_PHRASE_PREFIX
+        elif overlap:
+            # Neither substring tier fired. Fall back to how much of the
+            # constraint's vocabulary the product actually carries.
+            wanted = set(terms(normalised))
+            if len(wanted) < MIN_OVERLAP_TERMS:
+                continue
+            if blob_terms is None:
+                blob_terms = set(terms(blob))
+            total += BONUS_PHRASE_OVERLAP * (len(wanted & blob_terms) / len(wanted))
     return total
 
 
