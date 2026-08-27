@@ -51,6 +51,9 @@ class Agent:
     TRUNC_EARLY_TURNS = 2
     TRUNC_NARROW_INFO = 2
     TRUNC_MEDIUM_INFO = 4
+    # Rank on the raw transcript when template parsing recognises nothing.
+    # Paraphrase insurance; see src/eval/paraphrase.py.
+    RAW_FALLBACK = True
 
     def __init__(self, catalog_path: str = "data/catalog.jsonl") -> None:
         # ~15s, once per process. The evaluator constructs one Agent for all
@@ -69,13 +72,15 @@ class Agent:
 
         parse(state, user_message, turn)
 
-        pool = candidates(self.index, state.category, state.constraints)
+        fallback = state.transcript if (self.RAW_FALLBACK and state.parsed_nothing) else None
+        pool = candidates(self.index, state.category, state.constraints,
+                          fallback_text=fallback)
         # sorted() is stable, so products the ranker cannot separate keep their
         # FTS5 recall order. Keeps ties reproducible across runs.
         ranked = sorted(
             pool,
             key=lambda pid: -score(self.index, pid, state.category,
-                                   state.constraints, state.budget),
+                                   state.constraints, state.budget, fallback),
         )
 
         k = list_length(state, turn, top_k, enabled=self.TRUNCATE,

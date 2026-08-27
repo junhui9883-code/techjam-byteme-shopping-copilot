@@ -45,6 +45,20 @@ class SessionState:
     dead_attributes: set[str] = field(default_factory=set)
     boundary_signal: bool = False
 
+    # Raw customer turns, unparsed. This is the paraphrase safety net, and it
+    # comes from PR #1 (Jun Hui) -- kept after the step-4 harness showed that
+    # template matching, not the ranker, is where robustness dies: rewording
+    # only the template scaffolding costs 91% of the score, while swapping
+    # synonyms inside constraints costs 0.1%. When the parser recognises
+    # nothing, these raw terms are all the signal there is.
+    transcript: list[str] = field(default_factory=list)
+
+    @property
+    def parsed_nothing(self) -> bool:
+        """True when template parsing has yielded no usable signal at all --
+        the symptom of an unrecognised (paraphrased) message shape."""
+        return not self.constraints and not self.category
+
     @property
     def dead_ask_count(self) -> int:
         """How many asks have come back empty. Evidence that the specific

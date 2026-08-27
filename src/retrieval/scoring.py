@@ -56,8 +56,12 @@ _WS_RE = re.compile(r"\s+")
 
 
 def score(index: CatalogIndex, pid: str, category: str,
-          constraints: list[str], budget: float | None) -> float:
+          constraints: list[str], budget: float | None,
+          fallback_text: list[str] | None = None) -> float:
     """Relevance of one product against the accumulated session state."""
+    if not category and not constraints and fallback_text:
+        # Nothing parsed: rank on the raw transcript rather than not at all.
+        return _bm25(index, pid, " ".join(fallback_text), [])
     return (
         _bm25(index, pid, category, constraints)
         + _phrase_bonus(index, pid, constraints)

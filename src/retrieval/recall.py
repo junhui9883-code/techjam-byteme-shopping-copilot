@@ -29,14 +29,19 @@ _SQL = (
 
 
 def candidates(index: CatalogIndex, category: str, constraints: list[str],
-               limit: int = CANDIDATE_LIMIT) -> list[str]:
+               limit: int = CANDIDATE_LIMIT, fallback_text: list[str] | None = None) -> list[str]:
     """Return up to `limit` candidate pids for the accumulated session state.
 
     With nothing disclosed yet (turn 1 of a browsing session) there is no query
     to run, so we fall back to catalog order. Those turns are noise by
     construction and the ranker cannot do better than chance on them.
     """
+    # `fallback_text` is the raw transcript, used only when template parsing
+    # produced nothing. Catalog order (the previous behaviour) is worth about
+    # nothing, so any lexical signal beats it.
     query = " ".join([category] + constraints)
+    if not query.strip() and fallback_text:
+        query = " ".join(fallback_text)
     # dict.fromkeys dedupes while preserving first-seen order, which keeps the
     # query string stable across runs.
     query_terms = list(dict.fromkeys(terms(query)))[:MAX_QUERY_TERMS]

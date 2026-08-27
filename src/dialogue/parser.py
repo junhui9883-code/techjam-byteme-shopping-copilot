@@ -61,6 +61,8 @@ def parse(state: SessionState, message: str, turn: int) -> None:
     """Fold one customer message into `state`. Mutates in place."""
     text = message.strip()
     low = text.lower()
+    if text:
+        state.transcript.append(text)
 
     if turn == 1:
         _parse_opening(state, text, low)
