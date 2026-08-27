@@ -43,10 +43,21 @@ git clone <this repo> && cd techjam-byteme-shopping-copilot
 curl -L -o data/catalog.jsonl.gz \
   https://github.com/TechJam2026/techjam-conversational-search/releases/download/participant-kit/catalog.jsonl.gz
 gzip -dk data/catalog.jsonl.gz   # expect exactly 50000 lines
+./verify_data.sh                 # verify against the organizer's SHA-256 sums
 python3 -m evaluator.local_evaluator
 ```
 
 No dependencies to install. Python 3.10+ standard library only.
+
+`SHA256SUMS` is published as a **release asset**, not as a file in the
+repository, so a plain `git clone` does not provide it. `verify_data.sh`
+downloads it and checks the catalog; it exits non-zero on mismatch rather than
+skipping quietly. Expected values:
+
+```
+catalog.jsonl.gz  07fd142631fd6b03e2b4d09988c3eb7d53720e9d57010c79db48eeaada50a8f8  (official)
+catalog.jsonl     da979b05a68af864cb0dcf9ee6a81c010c7e66a57978ad286c7a2e005fc69a67  (ours, after gzip -d)
+```
 
 Every experiment is one command:
 
