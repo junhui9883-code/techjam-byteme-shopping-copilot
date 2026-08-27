@@ -295,11 +295,11 @@ truncated to five results on the final turn — all six of them misses.
 
 | Member | Focus | Contributions |
 |---|---|---|
-| _TBD_ | retrieval | |
-| _TBD_ | dialogue | |
-| _TBD_ | eval | |
-| _TBD_ | analysis | |
-| _TBD_ | docs | |
+| Tan Jie Yin Elicia | retrieval | Supported retrieval development and code review, including reviewing candidate retrieval behaviour and assisting with integration of the final retrieval pipeline. |
+| Yap Dong Xuan, Ryan | dialogue | Developed the modular agent architecture, including conversational parsing, session state, candidate recall, reranking, adaptive questioning, dynamic truncation and paraphrase-robustness testing. |
+| Xue Jingxian | eval | Led testing and results analysis by running the official evaluator, reviewing scenario-level performance, checking regressions and maintaining the experiment results. |
+| Chu Ruoyuan | analysis | Coordinated the final submission, including the submission checklist, Devpost requirements, repository links, video link and deadline verification. |
+| Goh Jun Hui | docs | Set up the shared GitHub workflow, reproduced the baseline, developed conversational memory and retrieval-weight experiments, tested popularity-aware reranking, independently verified the final agent and added agent contract and behaviour tests. |
 
 ## Data attribution
 
