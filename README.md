@@ -66,7 +66,13 @@ python3 -m src.eval.run --name my-experiment        # writes runs/my-experiment.
 python3 -m src.eval.run --name ablation --set TRUNCATE=false
 python3 -m src.eval.compare runs/day0.json runs/best.json
 python3 -m src.eval.paraphrase --level ablate       # robustness stress test
+python3 -m src.eval.natural_prompts --benchmark     # non-official natural wording diagnostic
 ```
+
+The official benchmark uses a deterministic customer simulator.  For demo and
+robustness work, `natural_prompts.py` restyles the same public-session
+disclosures into ordinary customer language. Its result is a non-official
+diagnostic, not a competition score.
 
 `run.py` diffs against `runs/day0.json` and reports **per-session churn** —
 which individual sessions were fixed, broken, improved or worsened. The
