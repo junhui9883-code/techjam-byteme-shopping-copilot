@@ -65,35 +65,69 @@ PRICE_PENALTY_CAP = 3
 _WS_RE = re.compile(r"\s+")
 
 
+class RankParams:
+    """Tunable ranker weights, so they can be swept instead of hand-guessed.
+
+    Defaults are the historical values. Every field is overridable from the
+    Agent class, which lets `--set` drive a sweep without editing code.
+    """
+
+    __slots__ = ("k1", "b", "w_category", "w_constraint", "phrase_exact",
+                 "phrase_prefix", "phrase_overlap", "price_near_bonus",
+                 "price_loose_bonus", "price_far_penalty")
+
+    def __init__(self, k1=BM25_K1, b=BM25_B, w_category=W_CATEGORY,
+                 w_constraint=W_CONSTRAINT, phrase_exact=BONUS_PHRASE_EXACT,
+                 phrase_prefix=BONUS_PHRASE_PREFIX,
+                 phrase_overlap=BONUS_PHRASE_OVERLAP,
+                 price_near_bonus=BONUS_PRICE_NEAR,
+                 price_loose_bonus=BONUS_PRICE_LOOSE,
+                 price_far_penalty=PENALTY_PRICE_FAR):
+        self.k1 = k1; self.b = b
+        self.w_category = w_category; self.w_constraint = w_constraint
+        self.phrase_exact = phrase_exact; self.phrase_prefix = phrase_prefix
+        self.phrase_overlap = phrase_overlap
+        self.price_near_bonus = price_near_bonus
+        self.price_loose_bonus = price_loose_bonus
+        self.price_far_penalty = price_far_penalty
+
+
+DEFAULT_PARAMS = RankParams()
+
+
 def score(index: CatalogIndex, pid: str, category: str,
           constraints: list[str], budget: float | None,
           fallback_text: list[str] | None = None, overlap: bool = True,
-          weights: list[float] | None = None) -> float:
+          weights: list[float] | None = None,
+          params: "RankParams | None" = None) -> float:
     """Relevance of one product against the accumulated session state."""
+    params = params or DEFAULT_PARAMS
     if not category and not constraints and fallback_text:
         # Nothing parsed: rank on the raw transcript rather than not at all.
-        return _bm25(index, pid, " ".join(fallback_text), [])
+        return _bm25(index, pid, " ".join(fallback_text), [], None, params)
     return (
-        _bm25(index, pid, category, constraints, weights)
-        + _phrase_bonus(index, pid, constraints, overlap, weights)
-        + _price_bonus(index, pid, budget)
+        _bm25(index, pid, category, constraints, weights, params)
+        + _phrase_bonus(index, pid, constraints, overlap, weights, params)
+        + _price_bonus(index, pid, budget, params)
     )
 
 
 def _bm25(index: CatalogIndex, pid: str, category: str, constraints: list[str],
-          weights: list[float] | None = None) -> float:
+          weights: list[float] | None = None,
+          params: "RankParams | None" = None) -> float:
+    params = params or DEFAULT_PARAMS
     doc_len = index.dl[pid]
     tf = index.tf[pid]
     total = 0.0
     # Per-constraint weights let an override demote what it supersedes without
     # discarding it (src/dialogue/state.py demote_superseded).
-    scaled = [(c, W_CONSTRAINT * _w(weights, i)) for i, c in enumerate(constraints)]
-    for text, weight in [(category, W_CATEGORY)] + scaled:
+    scaled = [(c, params.w_constraint * _w(weights, i)) for i, c in enumerate(constraints)]
+    for text, weight in [(category, params.w_category)] + scaled:
         for term in set(terms(text)):
             freq = tf.get(term, 0.0)
             if freq:
-                denominator = freq + BM25_K1 * (1 - BM25_B + BM25_B * doc_len / index.avgdl)
-                total += weight * index.idf.get(term, 0.0) * (freq * (BM25_K1 + 1)) / denominator
+                denominator = freq + params.k1 * (1 - params.b + params.b * doc_len / index.avgdl)
+                total += weight * index.idf.get(term, 0.0) * (freq * (params.k1 + 1)) / denominator
     return total
 
 
@@ -105,7 +139,9 @@ def _w(weights: list[float] | None, index: int) -> float:
 
 
 def _phrase_bonus(index: CatalogIndex, pid: str, constraints: list[str],
-                  overlap: bool = True, weights: list[float] | None = None) -> float:
+                  overlap: bool = True, weights: list[float] | None = None,
+                  params: "RankParams | None" = None) -> float:
+    params = params or DEFAULT_PARAMS
     fields = index.ftext[pid]
     # Only the three spec-bearing fields. Matching a constraint inside
     # `description` marketing copy is far weaker evidence.
@@ -118,9 +154,9 @@ def _phrase_bonus(index: CatalogIndex, pid: str, constraints: list[str],
         if len(normalised) <= MIN_PHRASE_LEN:
             continue
         if normalised in blob:
-            total += BONUS_PHRASE_EXACT * scale
+            total += params.phrase_exact * scale
         elif normalised[:PHRASE_PREFIX_LEN] in blob:
-            total += BONUS_PHRASE_PREFIX * scale
+            total += params.phrase_prefix * scale
         elif overlap:
             # Neither substring tier fired. Fall back to how much of the
             # constraint's vocabulary the product actually carries.
@@ -129,11 +165,13 @@ def _phrase_bonus(index: CatalogIndex, pid: str, constraints: list[str],
                 continue
             if blob_terms is None:
                 blob_terms = set(terms(blob))
-            total += BONUS_PHRASE_OVERLAP * scale * (len(wanted & blob_terms) / len(wanted))
+            total += params.phrase_overlap * scale * (len(wanted & blob_terms) / len(wanted))
     return total
 
 
-def _price_bonus(index: CatalogIndex, pid: str, budget: float | None) -> float:
+def _price_bonus(index: CatalogIndex, pid: str, budget: float | None,
+                 params: "RankParams | None" = None) -> float:
+    params = params or DEFAULT_PARAMS
     if budget is None:
         return 0.0
     price = index.price.get(pid)
@@ -141,7 +179,7 @@ def _price_bonus(index: CatalogIndex, pid: str, budget: float | None) -> float:
         return 0.0
     delta = abs(price - budget) / max(budget, 1.0)
     if delta < PRICE_NEAR:
-        return BONUS_PRICE_NEAR
+        return params.price_near_bonus
     if delta < PRICE_LOOSE:
-        return BONUS_PRICE_LOOSE
-    return PENALTY_PRICE_FAR * min(delta, PRICE_PENALTY_CAP)
+        return params.price_loose_bonus
+    return params.price_far_penalty * min(delta, PRICE_PENALTY_CAP)

@@ -36,7 +36,7 @@ from src.dialogue.state import SessionState
 from src.dialogue.truncation import list_length
 from src.retrieval.index import CatalogIndex
 from src.retrieval.recall import candidates
-from src.retrieval.scoring import score
+from src.retrieval.scoring import RankParams, score
 
 
 QUESTION_TEXT = {
@@ -75,6 +75,18 @@ class Agent:
     # Minimum expected discriminating power before a specific attribute is
     # worth a turn (ASK_POLICY="candidate_aware"; see src/dialogue/selector.py).
     MIN_QUESTION_VALUE = 0.25
+    # Ranker weights. Never swept before; MRR is 0.3 of the score and 62 of our
+    # 191 hits land below rank 1, so this is where the remaining headroom is.
+    RANK_K1 = 1.1          # swept: 1.4->0.8553, 1.1->0.8641
+    RANK_B = 0.6
+    RANK_W_CATEGORY = 1.2
+    RANK_W_CONSTRAINT = 2.0
+    RANK_PHRASE_EXACT = 40.0   # swept: 14->0.8553, 40->0.8600
+    RANK_PHRASE_PREFIX = 7.0
+    RANK_PHRASE_OVERLAP = 8.0
+    RANK_PRICE_NEAR = 10.0
+    RANK_PRICE_LOOSE = 4.0
+    RANK_PRICE_FAR = -2.0
     # FTS5 recall weight set (see src/retrieval/recall.py WEIGHT_SETS).
     RECALL_WEIGHTS = "default"
     # Candidate pool size handed to the reranker (see src/retrieval/recall.py).
@@ -99,6 +111,15 @@ class Agent:
 
         parse(state, user_message, turn, demote=self.OVERRIDE_DEMOTE)
 
+        params = RankParams(
+            k1=self.RANK_K1, b=self.RANK_B,
+            w_category=self.RANK_W_CATEGORY, w_constraint=self.RANK_W_CONSTRAINT,
+            phrase_exact=self.RANK_PHRASE_EXACT,
+            phrase_prefix=self.RANK_PHRASE_PREFIX,
+            phrase_overlap=self.RANK_PHRASE_OVERLAP,
+            price_near_bonus=self.RANK_PRICE_NEAR,
+            price_loose_bonus=self.RANK_PRICE_LOOSE,
+            price_far_penalty=self.RANK_PRICE_FAR)
         fallback = state.transcript if (self.RAW_FALLBACK and state.parsed_nothing) else None
         pool = candidates(self.index, state.category, state.constraints,
                           limit=self.RECALL_LIMIT,
@@ -109,7 +130,7 @@ class Agent:
             pool,
             key=lambda pid: -score(self.index, pid, state.category,
                                    state.constraints, state.budget, fallback,
-                                   self.PHRASE_OVERLAP, state.weights),
+                                   self.PHRASE_OVERLAP, state.weights, params),
         )
 
         k = list_length(state, turn, top_k, enabled=self.TRUNCATE,
