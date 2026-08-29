@@ -93,6 +93,17 @@ class Agent:
     #   <1  the prior crowds out the little text signal there is
     #   >1  with no constraints stated, popularity is the only signal we have
     POPULARITY_UNINFORMED_SCALE = 1.0
+    # How the popularity prior is combined with text evidence.
+    #   "global"    -- additive term, popularity normalised once against the
+    #                  catalog maximum. Absolute scale, so its influence varies
+    #                  with how strong the text scores happen to be.
+    #   "per_query" -- min-max normalise BOTH signals within the retrieved
+    #                  candidate set, then blend. Adapted from Jun Hui's
+    #                  codex-improvements branch. Scale-free, so the blend
+    #                  stays balanced whatever the absolute scores look like.
+    RANK_POPULARITY_MODE = "per_query"
+    # Weight on popularity in per_query mode (0 = text only, 1 = popularity only).
+    RANK_POPULARITY_BLEND = 0.27   # held-out: all 3 folds agree, zero penalty
     # Popularity prior weight (see src/retrieval/scoring.py). 0.0 = disabled.
     RANK_POPULARITY = 28.0   # swept: 0->0.8641, 10->0.8857, 25->0.9051, 28->0.9055, 40->0.9050
     # FTS5 recall weight set (see src/retrieval/recall.py WEIGHT_SETS).
@@ -107,6 +118,42 @@ class Agent:
         # 200 sessions, so this cost is amortised and not on the per-turn path.
         self.index = CatalogIndex(catalog_path)
         self._sessions: dict[str, SessionState] = {}
+
+    def _rank_per_query(self, pool, state, params, fallback):
+        """Rank by a scale-free blend of text evidence and popularity.
+
+        Both signals are min-max normalised across the retrieved candidates, so
+        neither can dominate merely by having larger raw numbers. The text
+        scorer is called with the popularity term switched off, otherwise the
+        prior would be counted twice.
+        """
+        text_params = RankParams(
+            k1=params.k1, b=params.b, w_category=params.w_category,
+            w_constraint=params.w_constraint, phrase_exact=params.phrase_exact,
+            phrase_prefix=params.phrase_prefix, phrase_overlap=params.phrase_overlap,
+            price_near_bonus=params.price_near_bonus,
+            price_loose_bonus=params.price_loose_bonus,
+            price_far_penalty=params.price_far_penalty,
+            popularity=0.0)
+
+        text = {pid: score(self.index, pid, state.category, state.constraints,
+                           state.budget, fallback, self.PHRASE_OVERLAP,
+                           state.weights, text_params) for pid in pool}
+        pop = {pid: self.index.pop.get(pid, 0.0) for pid in pool}
+        if not pool:
+            return []
+
+        t_lo, t_hi = min(text.values()), max(text.values())
+        p_lo, p_hi = min(pop.values()), max(pop.values())
+        t_span = (t_hi - t_lo) or 1.0
+        p_span = (p_hi - p_lo) or 1.0
+        blend = self.RANK_POPULARITY_BLEND
+
+        def combined(pid: str) -> float:
+            return ((1.0 - blend) * ((text[pid] - t_lo) / t_span)
+                    + blend * ((pop[pid] - p_lo) / p_span))
+
+        return sorted(pool, key=lambda pid: -combined(pid))
 
     def reset(self, session_id: str, user_profile: dict) -> None:
         """Begin a new session. Discards any state under this session_id."""
@@ -136,12 +183,15 @@ class Agent:
                           fallback_text=fallback, weights=self.RECALL_WEIGHTS)
         # sorted() is stable, so products the ranker cannot separate keep their
         # FTS5 recall order. Keeps ties reproducible across runs.
-        ranked = sorted(
-            pool,
-            key=lambda pid: -score(self.index, pid, state.category,
-                                   state.constraints, state.budget, fallback,
-                                   self.PHRASE_OVERLAP, state.weights, params),
-        )
+        if self.RANK_POPULARITY_MODE == "per_query":
+            ranked = self._rank_per_query(pool, state, params, fallback)
+        else:
+            ranked = sorted(
+                pool,
+                key=lambda pid: -score(self.index, pid, state.category,
+                                       state.constraints, state.budget, fallback,
+                                       self.PHRASE_OVERLAP, state.weights, params),
+            )
 
         k = list_length(state, turn, top_k, enabled=self.TRUNCATE,
                         early_turns=self.TRUNC_EARLY_TURNS,

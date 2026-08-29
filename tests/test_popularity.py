@@ -85,9 +85,17 @@ class PopularityPriorTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.path.unlink(missing_ok=True)
 
-    def _rank(self, popularity: float) -> list[str]:
+    def _rank(self, popularity: float, mode: str = "global") -> list[str]:
         agent = Agent(self.path)
-        agent.RANK_POPULARITY = popularity
+        agent.RANK_POPULARITY_MODE = mode
+        if mode == "per_query":
+            # In per_query the additive weight is unused; the blend controls it.
+            # Express the requested strength as a fraction of the shipped blend
+            # so the two modes are stressed comparably.
+            agent.RANK_POPULARITY_BLEND = min(
+                0.99, Agent.RANK_POPULARITY_BLEND * (popularity / Agent.RANK_POPULARITY))
+        else:
+            agent.RANK_POPULARITY = popularity
         agent.reset("s", {})
         response = agent.respond(
             "s",
@@ -161,6 +169,72 @@ class PopularityPriorTest(unittest.TestCase):
             agent.respond("u", "I'm looking for socks.", 1, 10)
         finally:
             path.unlink(missing_ok=True)
+
+
+class ShippedModePopularityTest(unittest.TestCase):
+    """The tests above drive the `global` blend. The SHIPPED mode is
+    `per_query`, where RANK_POPULARITY is ignored entirely and
+    RANK_POPULARITY_BLEND controls the mix -- so those tests would keep passing
+    while the shipped path went unchecked. These pin the shipped path.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.path = _catalog([EXACT_MATCH_UNPOPULAR, POPULAR_MISMATCH] + FILLER)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.path.unlink(missing_ok=True)
+
+    def _rank(self, blend: float) -> list[str]:
+        agent = Agent(self.path)
+        agent.RANK_POPULARITY_MODE = "per_query"
+        agent.RANK_POPULARITY_BLEND = blend
+        agent.reset("s", {})
+        return [item["parent_asin"] for item in agent.respond(
+            "s",
+            "I'm looking for Clothing Socks. A key requirement is: merino wool cushioned crew.",
+            1, 10)["recommendations"]]
+
+    def test_shipped_mode_is_per_query(self) -> None:
+        """If the default flips, the tests below stop testing what ships."""
+        self.assertEqual(Agent.RANK_POPULARITY_MODE, "per_query")
+
+    def test_evidence_beats_popularity_at_shipped_blend(self) -> None:
+        ranking = self._rank(Agent.RANK_POPULARITY_BLEND)
+        self.assertEqual(ranking[0], "NICHE001",
+                         "a 10M-review mismatch outranked an exact requirement match")
+
+    def test_blend_zero_is_text_only(self) -> None:
+        """blend=0 must reduce to pure text ranking -- the per_query control."""
+        self.assertEqual(self._rank(0.0)[0], "NICHE001")
+
+    def test_blend_one_is_popularity_only(self) -> None:
+        """The other end: blend=1 must order purely by popularity, proving the
+        signal is wired in and not silently ignored.
+
+        Asserted against the most popular product IN THE RETURNED RANKING, not
+        against the catalog's most reviewed item: the prior reranks the recalled
+        candidates, and a phone case is never recalled for a merino wool query.
+        Assuming otherwise would make this test demand that popularity override
+        recall itself, which is not what it does or should do.
+        """
+        agent = Agent(self.path)
+        agent.RANK_POPULARITY_MODE = "per_query"
+        agent.RANK_POPULARITY_BLEND = 1.0
+        agent.reset("s", {})
+        ranking = [item["parent_asin"] for item in agent.respond(
+            "s",
+            "I'm looking for Clothing Socks. A key requirement is: merino wool cushioned crew.",
+            1, 10)["recommendations"]]
+        self.assertGreater(len(ranking), 1, "expected several candidates")
+        pops = [agent.index.pop[pid] for pid in ranking]
+        self.assertEqual(pops, sorted(pops, reverse=True),
+                         "at blend=1 the ranking should be ordered by popularity")
+
+    def test_evidence_survives_well_above_the_shipped_blend(self) -> None:
+        """Margin check: the shipped blend is not perched on a cliff."""
+        self.assertEqual(self._rank(Agent.RANK_POPULARITY_BLEND * 1.5)[0], "NICHE001")
 
 
 if __name__ == "__main__":
