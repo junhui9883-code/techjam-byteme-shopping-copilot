@@ -67,23 +67,28 @@ _WS_RE = re.compile(r"\s+")
 
 def score(index: CatalogIndex, pid: str, category: str,
           constraints: list[str], budget: float | None,
-          fallback_text: list[str] | None = None, overlap: bool = True) -> float:
+          fallback_text: list[str] | None = None, overlap: bool = True,
+          weights: list[float] | None = None) -> float:
     """Relevance of one product against the accumulated session state."""
     if not category and not constraints and fallback_text:
         # Nothing parsed: rank on the raw transcript rather than not at all.
         return _bm25(index, pid, " ".join(fallback_text), [])
     return (
-        _bm25(index, pid, category, constraints)
-        + _phrase_bonus(index, pid, constraints, overlap)
+        _bm25(index, pid, category, constraints, weights)
+        + _phrase_bonus(index, pid, constraints, overlap, weights)
         + _price_bonus(index, pid, budget)
     )
 
 
-def _bm25(index: CatalogIndex, pid: str, category: str, constraints: list[str]) -> float:
+def _bm25(index: CatalogIndex, pid: str, category: str, constraints: list[str],
+          weights: list[float] | None = None) -> float:
     doc_len = index.dl[pid]
     tf = index.tf[pid]
     total = 0.0
-    for text, weight in [(category, W_CATEGORY)] + [(c, W_CONSTRAINT) for c in constraints]:
+    # Per-constraint weights let an override demote what it supersedes without
+    # discarding it (src/dialogue/state.py demote_superseded).
+    scaled = [(c, W_CONSTRAINT * _w(weights, i)) for i, c in enumerate(constraints)]
+    for text, weight in [(category, W_CATEGORY)] + scaled:
         for term in set(terms(text)):
             freq = tf.get(term, 0.0)
             if freq:
@@ -92,22 +97,30 @@ def _bm25(index: CatalogIndex, pid: str, category: str, constraints: list[str]) 
     return total
 
 
+def _w(weights: list[float] | None, index: int) -> float:
+    """Weight for constraint `index`; 1.0 when unset."""
+    if weights is None or index >= len(weights):
+        return 1.0
+    return weights[index]
+
+
 def _phrase_bonus(index: CatalogIndex, pid: str, constraints: list[str],
-                  overlap: bool = True) -> float:
+                  overlap: bool = True, weights: list[float] | None = None) -> float:
     fields = index.ftext[pid]
     # Only the three spec-bearing fields. Matching a constraint inside
     # `description` marketing copy is far weaker evidence.
     blob = fields["features"] + " " + fields["details"] + " " + fields["title"]
     blob_terms: set[str] | None = None
     total = 0.0
-    for constraint in constraints:
+    for position, constraint in enumerate(constraints):
+        scale = _w(weights, position)
         normalised = _WS_RE.sub(" ", constraint.lower()).strip()
         if len(normalised) <= MIN_PHRASE_LEN:
             continue
         if normalised in blob:
-            total += BONUS_PHRASE_EXACT
+            total += BONUS_PHRASE_EXACT * scale
         elif normalised[:PHRASE_PREFIX_LEN] in blob:
-            total += BONUS_PHRASE_PREFIX
+            total += BONUS_PHRASE_PREFIX * scale
         elif overlap:
             # Neither substring tier fired. Fall back to how much of the
             # constraint's vocabulary the product actually carries.
@@ -116,7 +129,7 @@ def _phrase_bonus(index: CatalogIndex, pid: str, constraints: list[str],
                 continue
             if blob_terms is None:
                 blob_terms = set(terms(blob))
-            total += BONUS_PHRASE_OVERLAP * (len(wanted & blob_terms) / len(wanted))
+            total += BONUS_PHRASE_OVERLAP * scale * (len(wanted & blob_terms) / len(wanted))
     return total
 
 

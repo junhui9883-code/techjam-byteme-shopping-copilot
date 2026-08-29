@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 
+from .classify import classify_all
 from .state import SessionState
 
 PRICE_RE = re.compile(r"\$\s*([0-9]+(?:\.[0-9]+)?)")
@@ -78,8 +79,14 @@ def _after(text: str, low: str, marker: str) -> str | None:
     return text[match.end():].strip().rstrip(".")
 
 
-def parse(state: SessionState, message: str, turn: int) -> None:
-    """Fold one customer message into `state`. Mutates in place."""
+def parse(state: SessionState, message: str, turn: int,
+          demote: float = 1.0) -> None:
+    """Fold one customer message into `state`. Mutates in place.
+
+    `demote` is the factor applied to constraints an override supersedes:
+    1.0 keeps the previous accumulate-everything behaviour, 0.0 is full
+    eviction. See SessionState.demote_superseded.
+    """
     text = message.strip()
     low = text.lower()
     if text:
@@ -102,11 +109,19 @@ def parse(state: SessionState, message: str, turn: int) -> None:
     tail = _after(text, low, WHAT_MATTERS)
     if tail is not None:
         # "For that, what matters is: A; B." -> two separate constraints.
-        state.constraints.extend([c.strip() for c in tail.split(";") if c.strip()])
+        for part in tail.split(";"):
+            if part.strip():
+                state.add(part.strip())
     else:
         new_value = _after(text, low, WHAT_I_NEED)
         if new_value:
-            state.constraints.append(new_value)
+            # OVERRIDE. The customer has revoked something, so supersede rather
+            # than accumulate. Appending both would leave the agent ranking on
+            # "black running shoes" AND "casual white sneakers" at once, which
+            # is precisely the weak-agent behaviour the brief calls out.
+            if demote < 1.0:
+                state.demote_superseded(classify_all(new_value), demote)
+            state.add(new_value)
 
     _refresh_budget(state)
 
@@ -119,13 +134,17 @@ def _parse_opening(state: SessionState, text: str, low: str) -> None:
 
     requirement = _after(text, low, KEY_REQUIREMENT)
     if requirement:
-        state.constraints.append(requirement)
+        state.add(requirement)
     elif STILL_EXPLORING not in low:
         # intent_override openers (evaluator line 162) carry a bare preference
         # clause after the first sentence. Browsing openers carry none.
         rest = text.split(".", 1)[1].strip() if "." in text else ""
         if rest:
-            state.constraints.append(rest.rstrip("."))
+            # This is the intent_override opener shape (evaluator line 162).
+            # Remember where it landed so a later override can revoke exactly
+            # the clause the customer is referring to.
+            state.opener_preference = len(state.constraints)
+            state.add(rest.rstrip("."))
 
 
 def _refresh_budget(state: SessionState) -> None:

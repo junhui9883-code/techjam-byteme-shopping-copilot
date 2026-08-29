@@ -53,6 +53,59 @@ class SessionState:
     # nothing, these raw terms are all the signal there is.
     transcript: list[str] = field(default_factory=list)
 
+    # Index of the constraint taken from the turn-1 bare-preference clause, if
+    # any. intent_override sessions open with "I'm looking for X. <old_value>"
+    # and later revoke exactly that clause, so knowing which constraint it was
+    # makes eviction precise instead of a guess.
+    opener_preference: int | None = None
+    # Per-constraint ranking weight, parallel to `constraints`. Overrides
+    # demote rather than delete: see demote_superseded().
+    weights: list[float] = field(default_factory=list)
+    # Audit trail: what was evicted and why. Surfaced in the response message
+    # so the behaviour is demonstrable, not just claimed.
+    evicted: list[str] = field(default_factory=list)
+
+    def add(self, constraint: str, weight: float = 1.0) -> None:
+        """Append a constraint and its ranking weight, keeping them in step."""
+        self.constraints.append(constraint)
+        self.weights.append(weight)
+
+    def weight_of(self, index: int) -> float:
+        """Weight for constraint `index`, defaulting to 1.0 if unset."""
+        return self.weights[index] if index < len(self.weights) else 1.0
+
+    def demote_superseded(self, types: set[str], factor: float) -> list[str]:
+        """Reduce the influence of constraints the new requirement supersedes.
+
+        Demote rather than delete. The public evaluator builds an override's
+        old_value from the TARGET's own soft preferences and new_value from the
+        same target's hard constraints (local_evaluator.py behavior_for), so the
+        "revoked" preference is still TRUE of the product being sought.
+        Deleting it discards correct evidence and measurably costs score.
+
+        Demotion satisfies both readings: the new requirement dominates the
+        ranking, as a customer reversing themselves expects, while the old one
+        keeps a residual vote instead of being thrown away. `factor` is swept,
+        not assumed -- 1.0 is a no-op, 0.0 is full eviction.
+
+        Only same-type constraints are touched. Changing your mind about colour
+        does not retract your budget.
+        """
+        from .classify import classify_all
+
+        while len(self.weights) < len(self.constraints):
+            self.weights.append(1.0)
+
+        touched: list[str] = []
+        for index, constraint in enumerate(self.constraints):
+            superseded = bool(classify_all(constraint) & types)
+            if superseded or index == self.opener_preference:
+                self.weights[index] *= factor
+                touched.append(constraint)
+        self.evicted.extend(touched)
+        self.opener_preference = None
+        return touched
+
     @property
     def parsed_nothing(self) -> bool:
         """True when template parsing has yielded no usable signal at all --

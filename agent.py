@@ -68,6 +68,9 @@ class Agent:
     # Rank on the raw transcript when template parsing recognises nothing.
     # Paraphrase insurance; see src/eval/paraphrase.py.
     RAW_FALLBACK = True
+    # Weight applied to constraints an override supersedes. 1.0 = accumulate
+    # (old behaviour), 0.0 = full eviction. Swept; see the run notes.
+    OVERRIDE_DEMOTE = 0.3
     # FTS5 recall weight set (see src/retrieval/recall.py WEIGHT_SETS).
     RECALL_WEIGHTS = "default"
     # Candidate pool size handed to the reranker (see src/retrieval/recall.py).
@@ -90,7 +93,7 @@ class Agent:
         # works rather than raising KeyError.
         state = self._sessions.setdefault(session_id, SessionState())
 
-        parse(state, user_message, turn)
+        parse(state, user_message, turn, demote=self.OVERRIDE_DEMOTE)
 
         fallback = state.transcript if (self.RAW_FALLBACK and state.parsed_nothing) else None
         pool = candidates(self.index, state.category, state.constraints,
@@ -102,7 +105,7 @@ class Agent:
             pool,
             key=lambda pid: -score(self.index, pid, state.category,
                                    state.constraints, state.budget, fallback,
-                                   self.PHRASE_OVERLAP),
+                                   self.PHRASE_OVERLAP, state.weights),
         )
 
         k = list_length(state, turn, top_k, enabled=self.TRUNCATE,
