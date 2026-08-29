@@ -110,3 +110,24 @@ class AgentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TopKContractTest(unittest.TestCase):
+    """Regression guard: the agent must never return more than top_k items.
+
+    NARROW_K and MEDIUM_K in src/dialogue/truncation.py are absolute constants.
+    Before they were clamped, `respond(..., top_k=1)` returned 3 and
+    `top_k=2` returned 3 -- a contract violation. The official evaluator always
+    passes top_k=10 so it never surfaced there, but the submission rules state
+    the organizer "reserves the right to run your submission under CPU, memory,
+    timeout, and network restrictions", and nothing fixes top_k at 10.
+    """
+
+    def test_never_exceeds_top_k(self):
+        from agent import Agent
+        agent = Agent("data/catalog.jsonl")
+        agent.reset("contract", {})
+        message = "I'm looking for a jacket, but I'm still exploring."
+        for top_k in (0, 1, 2, 3, 5, 10, 20):
+            with self.subTest(top_k=top_k):
+                out = agent.respond("contract", message, 1, top_k)
+                self.assertLessEqual(len(out["recommendations"]), max(top_k, 0))
