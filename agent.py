@@ -30,6 +30,7 @@ Reproduce: python3 -m evaluator.local_evaluator --output runs/day0.json
 from __future__ import annotations
 
 from src.dialogue.ask import next_ask
+from src.dialogue.selector import next_ask_candidate_aware
 from src.dialogue.parser import parse
 from src.dialogue.state import SessionState
 from src.dialogue.truncation import list_length
@@ -71,6 +72,9 @@ class Agent:
     # Weight applied to constraints an override supersedes. 1.0 = accumulate
     # (old behaviour), 0.0 = full eviction. Swept; see the run notes.
     OVERRIDE_DEMOTE = 0.3
+    # Minimum expected discriminating power before a specific attribute is
+    # worth a turn (ASK_POLICY="candidate_aware"; see src/dialogue/selector.py).
+    MIN_QUESTION_VALUE = 0.25
     # FTS5 recall weight set (see src/retrieval/recall.py WEIGHT_SETS).
     RECALL_WEIGHTS = "default"
     # Candidate pool size handed to the reranker (see src/retrieval/recall.py).
@@ -116,7 +120,10 @@ class Agent:
 
         # Chosen after ranking; the attribute asked this turn only affects the
         # customer's NEXT message, never this turn's recommendations.
-        ask = next_ask(state, self.ASK_POLICY, self.OTHER_FALLBACK_AFTER)
+        if self.ASK_POLICY == "candidate_aware":
+            ask = next_ask_candidate_aware(state, self.index, pool, self.MIN_QUESTION_VALUE)
+        else:
+            ask = next_ask(state, self.ASK_POLICY, self.OTHER_FALLBACK_AFTER)
 
         return {
             "message": QUESTION_TEXT.get(ask, "What matters most to you in this item?"),

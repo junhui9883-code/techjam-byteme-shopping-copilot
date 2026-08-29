@@ -50,6 +50,21 @@ ASK_ORDER = [
     "material", "color", "budget", "style", "size", "use_case", "feature",
 ]
 
+# Ordered by the MEASURED probability that a brief still holds a constraint of
+# that type, rather than by how well the attribute splits the catalog.
+#
+# Measured over all 200 materialised briefs (800 constraints):
+#     feature  50.5%   material 37.8%   color 7.5%
+#     style     2.4%   size      1.4%   use_case 0.5%
+#
+# `feature` is classify_constraint's catch-all and is HALF of every brief, yet
+# the priority order above buries it in seventh place. Entropy-based candidate
+# splitting misses it entirely: the catch-all has no vocabulary to be diverse
+# over, so it scores zero however much of the brief it actually carries.
+ASK_ORDER_PRIOR = [
+    "feature", "material", "color", "style", "size", "use_case",
+]
+
 FALLBACK_ATTRIBUTE = "other"
 
 # How many dead asks to tolerate before falling back to `other`. 1 means the
@@ -74,7 +89,8 @@ def next_ask(state: SessionState, policy: str = "priority",
     if state.dead_ask_count >= fallback_after:
         return FALLBACK_ATTRIBUTE
 
-    for attribute in ASK_ORDER:
+    order = ASK_ORDER_PRIOR if policy == "prior" else ASK_ORDER
+    for attribute in order:
         # Skip anything already asked, and anything the customer has explicitly
         # refused or exhausted (including the boundary "use your judgment").
         if attribute in state.asked or attribute in state.dead_attributes:

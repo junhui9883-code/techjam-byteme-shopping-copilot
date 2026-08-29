@@ -64,6 +64,8 @@ class SessionState:
     # Audit trail: what was evicted and why. Surfaced in the response message
     # so the behaviour is demonstrable, not just claimed.
     evicted: list[str] = field(default_factory=list)
+    # Last question-value estimate, for explanation and debugging.
+    last_question_values: list[tuple[str, float]] = field(default_factory=list)
 
     def add(self, constraint: str, weight: float = 1.0) -> None:
         """Append a constraint and its ranking weight, keeping them in step."""
