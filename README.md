@@ -65,8 +65,16 @@ Every experiment is one command:
 python3 -m src.eval.run --name my-experiment        # writes runs/my-experiment.json
 python3 -m src.eval.run --name ablation --set TRUNCATE=false
 python3 -m src.eval.compare runs/day0.json runs/best.json
-python3 -m src.eval.paraphrase --level ablate       # robustness stress test
+python3 -m src.eval.paraphrase --level ablate       # robustness: which mechanism is fragile
+python3 -m src.eval.natural_prompts --benchmark --control   # robustness: realistic phrasing
+python3 -m unittest discover -s tests               # 10 contract + behaviour tests
+python3 -m src.eval.natural_prompts --benchmark     # non-official natural wording diagnostic
 ```
+
+The official benchmark uses a deterministic customer simulator.  For demo and
+robustness work, `natural_prompts.py` restyles the same public-session
+disclosures into ordinary customer language. Its result is a non-official
+diagnostic, not a competition score.
 
 `run.py` diffs against `runs/day0.json` and reports **per-session churn** —
 which individual sessions were fixed, broken, improved or worsened. The
@@ -177,6 +185,23 @@ Two fixes followed directly from that measurement:
 We deliberately did **not** teach the parser to recognise our own paraphrases.
 Tuning an agent against its own stress harness measures the harness, not
 robustness. Both fixes above are paraphrase-agnostic by construction.
+
+### A second, independent harness
+
+`src/eval/natural_prompts.py` was written separately and takes a different
+approach: it rewrites **whole customer sentences** into natural human phrasing
+rather than substituting scaffolding fragments, so it measures realism where the
+table above measures mechanism.
+
+| Harness | Rewrites | Answers | Retained |
+|---|---|---|---|
+| `paraphrase.py` | fragments, composable | *which mechanism* is fragile | 43.3% |
+| `natural_prompts.py` | whole sentences | *how bad* with a realistic customer | 54.3% |
+
+Both carry a null control that reproduces 0.856159 exactly. Two independent
+implementations agreeing that rewording costs roughly half the score is stronger
+evidence than either number alone, and it is why we treat template dependence as
+the headline limitation rather than an artefact of one person's test.
 
 ## A design decision that cost us 0.007
 
@@ -291,15 +316,13 @@ truncated to five results on the final turn — all six of them misses.
 
 ## Team
 
-<!-- TODO: fill in before submission. Required by the submission rules. -->
-
 | Member | Focus | Contributions |
 |---|---|---|
-| _TBD_ | retrieval | |
-| _TBD_ | dialogue | |
-| _TBD_ | eval | |
-| _TBD_ | analysis | |
-| _TBD_ | docs | |
+| Tan Jie Yin Elicia | retrieval | Supported retrieval development and code review, including reviewing candidate retrieval behaviour and assisting with integration of the final retrieval pipeline. |
+| Yap Dong Xuan, Ryan | dialogue | Developed the modular agent architecture, including conversational parsing, session state, candidate recall, reranking, adaptive questioning, dynamic truncation and paraphrase-robustness testing. |
+| Xue Jingxian | eval | Led testing and results analysis by running the official evaluator, reviewing scenario-level performance, checking regressions and maintaining the experiment results. |
+| Chu Ruoyuan | analysis | Coordinated the final submission, including the submission checklist, Devpost requirements, repository links, video link and deadline verification. |
+| Goh Jun Hui | docs | Set up the shared GitHub workflow, reproduced the baseline, developed conversational memory and retrieval-weight experiments, tested popularity-aware reranking, independently verified the final agent and added agent contract and behaviour tests. |
 
 ## Data attribution
 

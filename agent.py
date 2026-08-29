@@ -38,6 +38,20 @@ from src.retrieval.recall import candidates
 from src.retrieval.scoring import score
 
 
+QUESTION_TEXT = {
+    "material": "Do you have a preferred material, such as cotton, leather, or wool?",
+    "color": "Do you have a colour in mind?",
+    "budget": "What price range would you like to stay within?",
+    "style": "What style or fit are you looking for?",
+    "size": "What size or fit would work best for you?",
+    "use_case": "What will you mainly be using it for?",
+    "feature": "Is there a feature that matters most to you?",
+    # `other` is meaningful to the evaluator but is not customer-friendly
+    # language. Phrase it as an open follow-up for manual demonstrations too.
+    "other": "What else matters most to you—fit, activity, style, features, or budget?",
+}
+
+
 class Agent:
     """Stateful multi-turn shopping agent over a frozen 50,000-product catalog."""
 
@@ -102,7 +116,7 @@ class Agent:
         ask = next_ask(state, self.ASK_POLICY, self.OTHER_FALLBACK_AFTER)
 
         return {
-            "message": f"Could you tell me about your {ask} preference?",
+            "message": QUESTION_TEXT.get(ask, "What matters most to you in this item?"),
             "ask_attribute": ask,
             "recommendations": recommendations,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
