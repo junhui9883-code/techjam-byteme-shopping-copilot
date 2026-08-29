@@ -18,8 +18,8 @@ ranked shortlist. It handles four behaviours: a buyer with a firm requirement, a
 browser with none, a customer who reverses their mind mid-conversation, and one
 who declines to state a preference at all.
 
-**Technical score 0.856 vs the 0.107 official baseline.** 95.5% of sessions end
-in a hit, in 3.35 turns on average.
+**Technical score 0.911 vs the 0.107 official baseline.** 98.5% of sessions end
+in a hit, in 2.41 turns on average.
 
 ## How we built it
 
@@ -28,7 +28,7 @@ the entire design. The customer is a **deterministic template engine, not an
 LLM**, and the hidden brief is generated from the target product's own metadata:
 at most four short strings lifted near-verbatim from one spec sheet. This is an
 entity-resolution problem wearing a dialogue costume. That is why an offline
-lexical system reaches 0.955 hit rate with no model at all.
+lexical system reaches 0.985 hit rate with no model at all.
 
 Five stages per turn — parse, recall, rank, truncate, ask — each in its own
 module with a single owner.
@@ -79,11 +79,11 @@ Component ablation (each row strips one component):
 
 | Configuration | Score |
 |---|---|
-| **Shipped** | **0.856159** |
-| − dynamic truncation | 0.827439 |
-| − lexical overlap tier | 0.855581 |
-| fallback after 2 dead asks (vs 1) | 0.843435 |
-| fallback after 3 dead asks (vs 1) | 0.835935 |
+| **Shipped** | **0.911025** |
+| − popularity prior | 0.864975 |
+| − dynamic truncation | 0.885358 |
+| − lexical overlap tier | 0.909750 |
+| ask: candidate-aware selector | 0.882950 |
 
 **A negative result we think is worth as much as a positive one.** FTS5 recall
 weight tuning is completely inert in this architecture — four weight sets and
@@ -106,10 +106,10 @@ because we expected the **exact-phrase bonus** to be the fragile part. Measured:
 | Stress | Retained |
 |---|---|
 | none (control) | 100.0% |
-| synonym substitution | 100.0% |
-| punctuation dropped | 100.1% |
-| filler words | 87.1% |
-| **template rewording** | **43.3%** |
+| synonym substitution | 100.1% |
+| punctuation dropped | 100.0% |
+| filler words | 94.5% |
+| **template rewording** | **44.2%** |
 
 Synonyms cost **nothing**. The fragility was entirely template matching in the
 parser. We would have spent days hardening the wrong component. The control
@@ -117,8 +117,8 @@ reproducing the clean score exactly is what makes the rest trustworthy.
 
 **We also found an exploit and declined to use it.** The evaluator's
 `ask_attribute="other"` bypasses its own type check and drains the customer's
-entire brief in two turns. It scores **0.862860** against our shipped
-**0.856159**. We left 0.0067 on the table deliberately, because an agent that
+entire brief in two turns. It scores **0.913900** against our shipped
+**0.911025**. We left 0.0029 on the table deliberately, because an agent that
 asks "tell me your other preference" twice is not a shopping assistant.
 
 Our policy instead rests on something provable: `classify_constraint` is total
@@ -134,7 +134,7 @@ The behaviour that matters commercially is the one that was worst: **boundary**
 — customers who say "I don't mind, you choose". That is a real and common
 shopping stance, and an assistant that keeps interrogating such a customer is
 actively annoying. It went **0.600 → 1.000** once we parsed the refusal signal
-and stopped re-asking.
+and stopped re-asking, with MRR reaching 0.950.
 
 Detecting refusal and adapting is the difference between an assistant and an
 interrogation. The same machinery handles a customer who changes their mind
@@ -148,9 +148,9 @@ retailer ships something like this.
 
 | | |
 |---|---|
-| Index build | 4.0 s, once per process |
-| Latency per turn | 23.8 ms mean, 51.4 ms p95, 94.9 ms max |
-| Memory | ~718 MB resident |
+| Index build | 3.8 s, once per process |
+| Latency per turn | 21.6 ms mean, 50.0 ms p95, 93.9 ms max |
+| Memory | ~725 MB resident |
 | Dependencies | none beyond the standard library |
 | **LLM tokens** | **0** |
 | **API cost** | **$0.00** |
@@ -185,7 +185,7 @@ team-hours than most of our positive changes gained points.
 
 ## What's next
 
-1. Reduce template dependence — our largest measured exposure at 43.3% retained.
+1. Reduce template dependence — our largest measured exposure at 44.2% retained.
 2. `buying` is stuck at 0.938 across 80 sessions and moved through none of our
    changes. Largest subgroup, least understood.
 3. Confidence-gated truncation: three sessions now hit faster but at worse rank,

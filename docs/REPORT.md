@@ -24,7 +24,7 @@ The entire information budget of a session is therefore **at most four short
 strings lifted near-verbatim from one product's spec sheet.**
 
 This is entity resolution, not dialogue understanding. It is why an offline
-lexical system with no model reaches 0.955 hit rate, and it is why we did not
+lexical system with no model reaches 0.985 hit rate, and it is why we did not
 put a language model on the scoring path.
 
 ### Scoring function
@@ -120,6 +120,49 @@ stated the specific space is exhausted, parsing both refusal shapes the
 evaluator emits. Threshold measured: 1 dead ask (0.8562) > 2 (0.8434) > 3
 (0.8359).
 
+### 2.6 Popularity prior (`src/retrieval/scoring.py`, `index.py`)
+
+The largest single component, worth +0.046.
+
+Checked before building: the median public-set target has 6,846 reviews against
+a catalog median of 12 — the 99th percentile. Targets are overwhelmingly
+heavily-reviewed products and the ranker ignored the field entirely, despite
+100% coverage on all 50,000 items.
+
+Combined per query rather than globally: text score and `log1p(rating_number)`
+are min-max normalised **across the retrieved candidates**, then blended
+(0.73 text / 0.27 popularity). Scale-free, so the mix cannot drift with the
+absolute magnitude of the text scores. This beat normalising popularity once
+against the catalog maximum by 0.005, and — more importantly — is far better
+determined by the data (see §2.7).
+
+It is a PRIOR, not evidence, and is weighted to separate only what the text
+cannot. Verified rather than asserted: three unrelated queries share zero
+products in their top 10, rankings are not ordered by popularity, and a
+verbatim requirement match on a 1-review product outranks a 10,000,000-review
+mismatch. `tests/test_popularity.py` pins all of it.
+
+### 2.7 Held-out validation (`src/eval/holdout.py`)
+
+Parameters chosen by keeping the best value on the public set are fitted to it.
+The public set is split by SHA-256 of `sample_id` — deterministic, and not
+aligned with the dataset's scenario grouping the way a positional split would
+be — then tuned on one half and reported on the other.
+
+    parameter              fold A / fold B / full     penalty
+    RANK_POPULARITY_BLEND  0.27  / 0.27  / 0.27       0.000000   AGREE
+    RANK_PHRASE_EXACT      20    / 20    / 20         0.000000   AGREE
+    RANK_K1                1.25  / 0.8   / 1.1        0.003485   DISAGREE
+
+It changed two decisions. `RANK_PHRASE_EXACT` moved 40 → 20: 40 had been tuned
+before the popularity prior existed, and both signals separate candidates BM25
+cannot, so keeping 40 double-counted the evidence. `RANK_K1` was deliberately
+left alone — the folds disagree, so its exact value is not determined by the
+data, and the whole range 0.8–1.4 spans ~0.006.
+
+Conclusion carried into §7: the popularity EFFECT is robust across folds with
+very different scenario mixes; the third decimal of 0.911025 is not.
+
 ## 3. Model choice
 
 **No model.** No LLM, no embeddings, no fine-tuning, no vector database.
@@ -131,7 +174,7 @@ This was a decision, not a limitation:
 2. **The submission rules state that organizer policy may disable network access
    at final scoring**, and no API keys or credits are provided. A pipeline that
    dies without a key may be scored invalid.
-3. Empirically it works: 0.955 hit rate with zero parameters.
+3. Empirically it works: 0.985 hit rate with zero parameters.
 
 A local dense route (MiniLM + reciprocal rank fusion) was scoped and
 deliberately dropped once the stress harness showed synonym substitution costs
@@ -139,17 +182,17 @@ deliberately dropped once the stress harness showed synonym substitution costs
 
 ## 4. Cost, latency, memory, tokens
 
-Apple Silicon laptop, single core, 661 turns across 200 sessions.
+Apple Silicon laptop, single core, 479 turns across 200 sessions.
 
 | Metric | Value |
 |---|---|
-| Index build | 4.0 s (once per process, amortised) |
-| Latency per turn — mean | 23.8 ms |
-| Latency per turn — p50 | 22.7 ms |
-| Latency per turn — p95 | 51.4 ms |
-| Latency per turn — max | 94.9 ms |
-| 200 sessions end to end | 15.8 s |
-| Resident memory | ~718 MB |
+| Index build | 3.8 s (once per process, amortised) |
+| Latency per turn — mean | 21.6 ms |
+| Latency per turn — p50 | 19.2 ms |
+| Latency per turn — p95 | 50.0 ms |
+| Latency per turn — max | 93.9 ms |
+| 200 sessions end to end | 10.4 s |
+| Resident memory | ~725 MB |
 | Prompt tokens | **0** |
 | Completion tokens | **0** |
 | API cost | **$0.00** |
@@ -183,13 +226,13 @@ per run.
 
 | Stress | Score | Retained |
 |---|---|---|
-| clean | 0.856159 | — |
-| none (control) | 0.856159 | 100.0% |
-| clause reordering | 0.856159 | 100.0% |
-| synonym substitution | 0.856159 | 100.0% |
-| punctuation dropped | 0.856660 | 100.1% |
-| filler words | 0.745774 | 87.1% |
-| **template rewording** | **0.370891** | **43.3%** |
+| clean | 0.911025 | — |
+| none (control) | 0.911025 | 100.0% |
+| clause reordering | 0.911025 | 100.0% |
+| punctuation dropped | 0.911025 | 100.0% |
+| synonym substitution | 0.911592 | 100.1% |
+| filler words | 0.860539 | 94.5% |
+| **template rewording** | **0.402400** | **44.2%** |
 
 The `none` control reproducing the clean score exactly is what licenses reading
 the rest.
@@ -198,7 +241,7 @@ the rest.
 be the fragility and had scoped a dense-embedding route accordingly. Synonym
 substitution costs 0.0%; the fragility is entirely template matching in the
 parser. Two paraphrase-agnostic fixes followed: punctuation-tolerant markers
-(eliminated a 26% loss) and the raw-transcript fallback (9.2% → 43.3%
+(eliminated a 26% loss) and the raw-transcript fallback (9.2% → 44.2%
 retained, at zero clean cost).
 
 We did **not** teach the parser our own paraphrases. That would measure the
@@ -206,7 +249,7 @@ harness rather than the agent.
 
 ## 7. Limitations
 
-1. **Template dependence, 43.3% retained.** Largest known exposure. If the
+1. **Template dependence, 44.2% retained.** Largest known exposure. If the
    private harness paraphrases, expect a substantial drop.
 2. **Filler words cost 13%.** Fixable only with the words our own harness
    inserts, so left unfixed rather than manufacture a number.
@@ -215,12 +258,12 @@ harness rather than the agent.
 4. **Speed/rank tension.** Three sessions now hit at turn 3 rank 4 where they
    previously hit at turn 8 rank 1 — a net loss. Confidence-gated truncation is
    the proper fix and is not implemented.
-5. **~718 MB resident.** Fine locally; the scoring environment's limit is
+5. **~725 MB resident.** Fine locally; the scoring environment's limit is
    unknown.
 6. **Boundary is n = 10.** 0.600 → 1.000 is four sessions. Directionally real,
    statistically thin.
 7. **Paraphrase figures are our guesses** at organizer behaviour. The *ranking*
-   of fragile components is solid; the absolute 43.3% is an indicator, not a
+   of fragile components is solid; the absolute 44.2% is an indicator, not a
    prediction.
 
 ## 8. Reproducibility
@@ -245,15 +288,18 @@ python3 -m src.eval.paraphrase --level ablate # robustness table
 
 | Configuration | Score | Δ vs shipped |
 |---|---|---|
-| **Shipped** | **0.856159** | — |
-| − dynamic truncation | 0.827439 | −0.028720 |
-| − lexical overlap tier | 0.855581 | −0.000578 |
-| − raw-transcript fallback | 0.856159 | 0.000000 * |
-| fallback after 2 dead asks | 0.843435 | −0.012724 |
-| fallback after 3 dead asks | 0.835935 | −0.020224 |
-| bare `"other"` exploit (not shipped) | 0.862860 | +0.006701 |
-| day-0 prototype | 0.785761 | −0.070398 |
-| official BM25 starter | 0.106710 | −0.749449 |
+| **Shipped** | **0.911025** | — |
+| − popularity prior entirely | 0.864975 | −0.046050 |
+| − dynamic truncation | 0.885358 | −0.025667 |
+| − lexical overlap tier | 0.909750 | −0.001275 |
+| − raw-transcript fallback | 0.911025 | 0.000000 * |
+| popularity: global, not per-query | 0.906275 | −0.004750 |
+| override: full eviction | 0.898366 | −0.012659 |
+| override: no demotion | 0.911400 | +0.000375 |
+| ask: candidate-aware selector | 0.882950 | −0.028075 |
+| ask: bare `"other"` exploit (not shipped) | 0.913900 | +0.002875 |
+| day-0 prototype | 0.785761 | −0.125264 |
+| official BM25 starter | 0.106710 | −0.804315 |
 
 \* Fires only when parsing recognises nothing, which never occurs on the clean
 public set. Its value appears solely under §6.

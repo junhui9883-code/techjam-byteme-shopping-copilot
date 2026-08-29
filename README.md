@@ -4,9 +4,9 @@ TechJam 2026, Problem 4. A multi-turn shopping agent that finds a hidden target
 product in a frozen 50,000-item Amazon catalog within 10 turns, ranked as high
 as possible.
 
-**Technical score 0.856 on the 200 public sessions, up from the 0.107 official
+**Technical score 0.911 on the 200 public sessions, up from the 0.107 official
 baseline.** No LLM, no embeddings, no network, no vector database. Pure Python
-standard library plus SQLite. The whole thing runs in 24 ms per turn on a
+standard library plus SQLite. The whole thing runs in 22 ms per turn on a
 laptop.
 
 > The organizer's original challenge description is preserved at
@@ -23,18 +23,18 @@ Nothing under `evaluator/` was changed at any point.
 |---|---|---|---|---|
 | Official BM25 starter | 0.125 | 0.068 | 9.81 | 0.10671 |
 | Our day-0 prototype | 0.910 | 0.706 | 5.05 | 0.785761 |
-| **Shipped** | **0.955** | **0.752** | **3.35** | **0.856159** |
+| **Shipped** | **0.985** | **0.822** | **2.41** | **0.911025** |
 
 Per scenario, day-0 → shipped:
 
 | Scenario | n | Hit@10 | MRR | MTTC |
 |---|---|---|---|---|
-| buying | 80 | 0.938 → 0.938 | 0.707 → 0.751 | 4.24 → 3.14 |
-| browsing | 80 | 0.925 → 0.975 | 0.708 → 0.718 | 5.29 → 3.23 |
-| intent_override | 30 | 0.900 → 0.933 | 0.789 → 0.817 | 5.53 → 4.23 |
-| boundary | 10 | 0.600 → **1.000** | 0.425 → 0.842 | 8.10 → 3.40 |
+| buying | 80 | 0.938 → 0.988 | 0.707 → 0.824 | 4.24 → 1.88 |
+| browsing | 80 | 0.925 → 0.988 | 0.708 → 0.760 | 5.29 → 2.36 |
+| intent_override | 30 | 0.900 → 0.967 | 0.789 → 0.942 | 5.53 → 3.87 |
+| boundary | 10 | 0.600 → **1.000** | 0.425 → 0.950 | 8.10 → 2.70 |
 
-Misses fell from 18 to 9 of 200.
+Misses fell from 18 to 3 of 200. Every scenario is above 0.96 hit rate.
 
 ## Reproduce
 
@@ -121,17 +121,24 @@ Each row strips exactly one component from the shipped agent.
 
 | Configuration | Score | Δ |
 |---|---|---|
-| **Shipped** | **0.856159** | — |
-| − dynamic truncation | 0.827439 | −0.0287 |
-| − lexical overlap tier | 0.855581 | −0.0006 |
-| − raw-transcript fallback | 0.856159 | 0.0000 * |
-| fallback after 2 dead asks (vs 1) | 0.843435 | −0.0127 |
-| fallback after 3 dead asks (vs 1) | 0.835935 | −0.0203 |
+| **Shipped** | **0.911025** | — |
+| − popularity prior entirely | 0.864975 | −0.0461 |
+| − dynamic truncation | 0.885358 | −0.0257 |
+| − lexical overlap tier | 0.909750 | −0.0013 |
+| − raw-transcript fallback | 0.911025 | 0.0000 * |
+| popularity: global instead of per-query | 0.906275 | −0.0047 |
+| override: full eviction instead of demotion | 0.898366 | −0.0127 |
+| override: no demotion at all | 0.911400 | +0.0004 † |
+| ask: candidate-aware selector | 0.882950 | −0.0281 |
 
 \* The raw-transcript fallback only fires when template parsing recognises
 nothing, which never happens on the clean public set. Its entire value is
 invisible here and shows up only under the paraphrase stress test below. We
 kept it on that evidence alone.
+
+† Override demotion costs 0.0004. We ship it anyway: appending a requirement
+the customer has explicitly revoked is the behaviour the brief names as the
+weak agent, and it is not worth four ten-thousandths to exhibit it.
 
 **Recall tuning is inert in this architecture — a negative result worth
 recording.** FTS5 weight sets (four tried, including a teammate's tuned set)
@@ -140,6 +147,55 @@ The generated SQL and the candidate pools genuinely differ (350/400 shared),
 but the products that swap in and out are all irrelevant. Recall decides only
 pool *membership*, and 400 is far past the point where the target is reliably
 inside. The reranker decides everything that matters.
+
+## The largest single gain: a popularity prior
+
+Before building anything we checked whether the signal existed:
+
+```
+median rating_number    catalog 12      TARGETS 6,846
+median target sits at the 99th percentile of catalog review count
+```
+
+Targets are overwhelmingly drawn from heavily-reviewed products, and the ranker
+was ignoring the field entirely despite 100% coverage across all 50,000 items.
+Adding it as a fourth signal is worth **+0.046**, the biggest change we made.
+
+It combines the two signals the way the idea's author originally proposed:
+min-max normalise text score and popularity **across the retrieved candidates**,
+then blend. That is scale-free, so the mix stays balanced whatever the raw
+numbers look like — and it beats normalising popularity once against the catalog
+maximum by a further 0.005.
+
+It is a **prior, not evidence**, and is weighted to only separate candidates the
+text cannot. Verified, not assumed: three unrelated queries share zero products
+in their top 10, results are not ordered by popularity, and a product matching a
+requirement verbatim outranks a 10,000,000-review mismatch. Tests pin all of it.
+
+**Known risk.** This exploits a property of how the public set was sampled. If
+the private 800 targets were drawn the same way it transfers; if they were
+sampled uniformly from the catalog it would hurt. `RANK_POPULARITY_BLEND = 0`
+disables it in one line. We have asked the organizers.
+
+## We validated our own tuning on held-out data
+
+Swept parameters are chosen by keeping whichever value scores highest on the
+public set — which is fitting on the test set. `src/eval/holdout.py` splits the
+200 sessions by SHA-256 of `sample_id`, tunes on one half and reports the other.
+
+It changed two decisions:
+
+- **`RANK_PHRASE_EXACT` 40 → 20.** All three folds agreed, zero overfitting
+  penalty. 40 had been tuned *before* the popularity prior existed; both signals
+  separate candidates BM25 cannot, so keeping 40 double-counted the evidence.
+- **`RANK_K1` left at 1.1.** The folds disagreed (1.25 / 0.8 / 1.1), so the value
+  is not determined by the data. The whole range 0.8–1.4 spans ~0.006, so
+  changing it would be moving noise around. Recorded rather than silently kept.
+
+The blend weight that ships was chosen this way: all three folds agree on 0.27
+with a zero penalty. The popularity *effect* is robust across folds with very
+different scenario mixes; the third decimal of 0.911 is not. **Expect the
+private 800 to score somewhat below it.**
 
 ## Robustness: we tried to break our own agent
 
@@ -156,13 +212,13 @@ the evaluator assigns a fresh uuid4 session id per run.
 
 | Stress | Score | Retained |
 |---|---|---|
-| clean | 0.856159 | — |
-| **none (control)** | 0.856159 | **100.0%** |
-| clause reordering | 0.856159 | 100.0% |
-| synonym substitution | 0.856159 | 100.0% |
-| punctuation dropped | 0.856660 | 100.1% |
-| filler words inserted | 0.745774 | 87.1% |
-| **template rewording** | **0.370891** | **43.3%** |
+| clean | 0.911025 | — |
+| **none (control)** | 0.911025 | **100.0%** |
+| clause reordering | 0.911025 | 100.0% |
+| punctuation dropped | 0.911025 | 100.0% |
+| synonym substitution | 0.911592 | 100.1% |
+| filler words inserted | 0.860539 | 94.5% |
+| **template rewording** | **0.402400** | **44.2%** |
 
 The `none` control reproducing the clean score *exactly* is what licenses
 reading the rest: the harness itself introduces no distortion.
@@ -180,7 +236,7 @@ Two fixes followed directly from that measurement:
   punctuation is incidental to the phrase. Eliminated a 26% loss outright.
 - **Raw-transcript fallback.** When parsing recognises nothing, rank on the raw
   customer words rather than on catalog order. Worst case went from 9.2% to
-  43.3% retained, at zero cost to the clean score.
+  44.2% retained, at zero cost to the clean score.
 
 We deliberately did **not** teach the parser to recognise our own paraphrases.
 Tuning an agent against its own stress harness measures the harness, not
@@ -195,10 +251,10 @@ table above measures mechanism.
 
 | Harness | Rewrites | Answers | Retained |
 |---|---|---|---|
-| `paraphrase.py` | fragments, composable | *which mechanism* is fragile | 43.3% |
-| `natural_prompts.py` | whole sentences | *how bad* with a realistic customer | 54.3% |
+| `paraphrase.py` | fragments, composable | *which mechanism* is fragile | 44.2% |
+| `natural_prompts.py` | whole sentences | *how bad* with a realistic customer | 59.3% |
 
-Both carry a null control that reproduces 0.856159 exactly. Two independent
+Both carry a null control that reproduces 0.911025 exactly. Two independent
 implementations agreeing that rewording costs roughly half the score is stronger
 evidence than either number alone, and it is why we treat template dependence as
 the headline limitation rather than an artefact of one person's test.
@@ -213,10 +269,10 @@ We found it, measured it, and **chose not to ship it**:
 
 | Ask policy | Score |
 |---|---|
-| Bare `"other"` loop | 0.862860 |
-| **Shipped policy** | **0.856159** |
+| Bare `"other"` loop | 0.913900 |
+| **Shipped policy** | **0.911025** |
 
-That is 0.0067 knowingly left on the table. It buys an agent that asks real
+That is 0.0029 knowingly left on the table. It buys an agent that asks real
 questions. Measured ask distribution: **55% specific attributes** (material 31%,
 color 20%, budget 4%), 45% open fallback; every session asks at least one
 specific attribute, mean 1.79 before falling back. The conversation reads
@@ -239,10 +295,10 @@ Measured on an Apple Silicon laptop, single core.
 
 | | |
 |---|---|
-| Index build | 4.0 s, once per process |
-| Latency per turn | 23.8 ms mean, 22.7 ms p50, 51.4 ms p95, 94.9 ms max |
-| 200 sessions end to end | 15.8 s |
-| Memory | ~718 MB resident for the index |
+| Index build | 3.8 s, once per process |
+| Latency per turn | 21.6 ms mean, 19.2 ms p50, 50.0 ms p95, 93.9 ms max |
+| 200 sessions end to end | 10.4 s |
+| Memory | ~725 MB resident for the index |
 | **LLM tokens** | **0 prompt, 0 completion, 0 total** |
 | **API cost** | **$0.00** |
 | **Network calls** | **none** |
@@ -254,26 +310,22 @@ reaches for the network in the first place.
 
 Stated plainly, because we measured them.
 
-1. **Template dependence is our largest exposure.** 43.3% of score retained when
-   customer phrasing is rewritten. If the private harness paraphrases, we expect
-   a substantial drop. This is the first thing we would fix with more time.
-2. **Filler words still cost 13%.** Fixable by extending the stopword list, but
-   only with words our own harness inserts, so we left it rather than
-   manufacture a number.
-3. **`buying` is stuck at 0.938 hit rate** across 80 sessions and did not move
-   through any change we made. It is the largest subgroup and the least
-   understood.
-4. **Faster asking costs rank on some sessions.** Three sessions now hit at turn
-   3 rank 4 where they previously hit at turn 8 rank 1 — a net loss under the
-   scoring function. A confidence-gated truncation schedule is the proper fix
-   and is not implemented.
-5. **Memory is ~718 MB.** Fine on a laptop; we do not know the scoring
-   environment's limit.
-6. **The paraphrase numbers are our guesses** at what an organizer might do. The
-   *ranking* of which components are fragile is solid; the absolute 43.3% is an
-   indicator, not a prediction.
-7. **Boundary is n=10.** 0.600 → 1.000 is four sessions. Directionally real,
-   statistically thin.
+1. **Template dependence is our largest exposure.** 44.2% of score retained when
+   customer phrasing is rewritten. If the private harness paraphrases, expect a
+   substantial drop. This is the first thing we would fix with more time.
+2. **The popularity prior assumes the private set is sampled like the public
+   one.** It is worth +0.046 and depends on targets being heavily-reviewed
+   products. One line disables it if that assumption fails.
+3. **Filler words still cost 5.5%.** Fixable only with words our own harness
+   inserts, so left unfixed rather than manufacture a number.
+4. **`browsing` is now the weakest subgroup** at 0.760 MRR across 80 sessions —
+   the largest remaining pool of recoverable score.
+5. **~725 MB resident.** Fine locally; the scoring environment's limit is
+   unknown.
+6. **Boundary is n = 10.** Directionally real, statistically thin.
+7. **Tuned parameters carry residual overfitting risk.** Held-out validation
+   bounds it but does not eliminate it; the effects are robust, the exact
+   values are not.
 
 ## Repository layout
 
