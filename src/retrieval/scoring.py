@@ -62,6 +62,16 @@ BONUS_PRICE_LOOSE = 4.0
 PENALTY_PRICE_FAR = -2.0
 PRICE_PENALTY_CAP = 3
 
+# Popularity prior. Shoppers search for products people actually buy, and the
+# catalog is dominated by long-tail items nobody reviews. Measured on the
+# public set: the median target sits at the 99th percentile of review count
+# (6,846 reviews against a catalog median of 12).
+#
+# CAUTION: this is a PRIOR, not evidence. It must stay small enough that it only
+# separates candidates the text cannot, or it degenerates into "always return
+# the bestseller" and stops answering the question that was asked.
+BONUS_POPULARITY = 0.0
+
 _WS_RE = re.compile(r"\s+")
 
 
@@ -74,7 +84,7 @@ class RankParams:
 
     __slots__ = ("k1", "b", "w_category", "w_constraint", "phrase_exact",
                  "phrase_prefix", "phrase_overlap", "price_near_bonus",
-                 "price_loose_bonus", "price_far_penalty")
+                 "price_loose_bonus", "price_far_penalty", "popularity")
 
     def __init__(self, k1=BM25_K1, b=BM25_B, w_category=W_CATEGORY,
                  w_constraint=W_CONSTRAINT, phrase_exact=BONUS_PHRASE_EXACT,
@@ -82,7 +92,8 @@ class RankParams:
                  phrase_overlap=BONUS_PHRASE_OVERLAP,
                  price_near_bonus=BONUS_PRICE_NEAR,
                  price_loose_bonus=BONUS_PRICE_LOOSE,
-                 price_far_penalty=PENALTY_PRICE_FAR):
+                 price_far_penalty=PENALTY_PRICE_FAR,
+                 popularity=BONUS_POPULARITY):
         self.k1 = k1; self.b = b
         self.w_category = w_category; self.w_constraint = w_constraint
         self.phrase_exact = phrase_exact; self.phrase_prefix = phrase_prefix
@@ -90,6 +101,7 @@ class RankParams:
         self.price_near_bonus = price_near_bonus
         self.price_loose_bonus = price_loose_bonus
         self.price_far_penalty = price_far_penalty
+        self.popularity = popularity
 
 
 DEFAULT_PARAMS = RankParams()
@@ -104,11 +116,13 @@ def score(index: CatalogIndex, pid: str, category: str,
     params = params or DEFAULT_PARAMS
     if not category and not constraints and fallback_text:
         # Nothing parsed: rank on the raw transcript rather than not at all.
-        return _bm25(index, pid, " ".join(fallback_text), [], None, params)
+        return (_bm25(index, pid, " ".join(fallback_text), [], None, params)
+                + params.popularity * index.pop.get(pid, 0.0))
     return (
         _bm25(index, pid, category, constraints, weights, params)
         + _phrase_bonus(index, pid, constraints, overlap, weights, params)
         + _price_bonus(index, pid, budget, params)
+        + params.popularity * index.pop.get(pid, 0.0)
     )
 
 

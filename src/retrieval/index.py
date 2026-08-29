@@ -46,6 +46,7 @@ class CatalogIndex:
     dl      : pid -> unweighted token count (BM25 document length)
     idf     : term -> inverse document frequency
     avgdl   : mean document length over the catalog
+    pop     : pid -> popularity prior in [0, 1], from log1p(rating_number)
     """
 
     def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
@@ -58,6 +59,7 @@ class CatalogIndex:
         self.dl: dict[str, int] = {}
         self.idf: dict[str, float] = {}
         self.avgdl: float = 0.0
+        self.pop: dict[str, float] = {}
         self._build()
 
     def _build(self) -> None:
@@ -81,6 +83,7 @@ class CatalogIndex:
                 self.ids.append(pid)
                 self.ftext[pid] = {f: fx[f].lower() for f in FIELDS}
                 self.price[pid] = _parse_price(product.get("price"))
+                self.pop[pid] = _rating_count(product.get("rating_number"))
 
                 # Field-weighted term frequencies. `n` counts raw tokens (not
                 # weighted) so document length stays a true length.
@@ -107,6 +110,21 @@ class CatalogIndex:
         total = len(self.ids)
         self.idf = {t: math.log(1 + (total - d + 0.5) / (d + 0.5)) for t, d in df.items()}
         self.avgdl = sum(self.dl.values()) / max(total, 1)
+
+        # Popularity prior. Review counts are extremely heavy-tailed -- the
+        # catalog median is 12 while the public set's median TARGET has 6,846 --
+        # so raw counts would let one blockbuster dominate every ranking. log1p
+        # compresses that, and dividing by the observed maximum puts the prior
+        # in [0, 1] so its weight is interpretable against the other signals.
+        largest = max(self.pop.values(), default=0.0) or 1.0
+        self.pop = {pid: value / largest for pid, value in self.pop.items()}
+
+
+def _rating_count(raw: object) -> float:
+    """log1p of the review count; 0.0 when absent or unparseable."""
+    if not isinstance(raw, (int, float)) or raw <= 0:
+        return 0.0
+    return math.log1p(float(raw))
 
 
 def _parse_price(raw: object) -> float | None:
