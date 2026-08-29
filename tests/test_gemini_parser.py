@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.llm.gemini_parser import EMPTY_STATE, normalise_state, state_constraints
+from src.llm.session_memory import SessionMemory
 
 
 class GeminiParserHelperTest(unittest.TestCase):
@@ -33,6 +34,53 @@ class GeminiParserHelperTest(unittest.TestCase):
         self.assertEqual(
             state_constraints(state),
             ["brand: Nike", "color: black", "waterproof", "budget around $100.0"],
+        )
+
+    def test_memory_keeps_separate_recipient_contexts(self) -> None:
+        memory = SessionMemory()
+        memory.apply({
+            "recipient": "self",
+            "context_action": "new",
+            "intent": "buying",
+            "category": "bag",
+            "color": "white",
+        }, "Find a white bag for me")
+        memory.apply({
+            "recipient": "brother",
+            "context_action": "switch",
+            "intent": "buying",
+            "category": "bag",
+            "color": "black",
+        }, "Find a black bag for my brother")
+        restored = memory.apply({
+            "recipient": "self",
+            "context_action": "resume",
+            "intent": "buying",
+            "category": "bag",
+            "color": "white",
+        }, "Go back to the white bag for me")
+
+        self.assertEqual(restored["color"], "white")
+        self.assertEqual(memory.contexts["brother|bag"]["color"], "black")
+        self.assertEqual(len(memory.contexts), 2)
+
+    def test_only_explicit_profile_updates_become_long_term(self) -> None:
+        memory = SessionMemory()
+        memory.apply({
+            "recipient": "self",
+            "category": "bag",
+            "color": "white",
+            "profile_updates": ["Usually prefers white bags"],
+        }, "I usually prefer white bags")
+        memory.apply({
+            "recipient": "brother",
+            "category": "bag",
+            "color": "black",
+        }, "My brother wants a black bag")
+
+        self.assertEqual(
+            memory.user_profile["stable_preferences"],
+            ["Usually prefers white bags"],
         )
 
 
