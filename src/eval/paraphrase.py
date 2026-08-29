@@ -141,6 +141,39 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
 
 FILLERS = ("um,", "like,", "honestly,", "I guess", "sort of", "you know,", "basically,")
 
+# ---------------------------------------------------------------------------
+# Independently generated rewrites (optional asset).
+#
+# SCAFFOLD_REWRITES above were written by hand, by the same author who then had
+# to decide whether to harden the parser against them -- which is circular, and
+# is why they were deliberately left un-hardened. tools/generate_paraphrases.py
+# produces an independent set via an external model at DEVELOPMENT TIME and
+# commits it as static JSON. Nothing here makes a network call; scoring stays
+# offline and deterministic. Use --source generated to switch.
+# ---------------------------------------------------------------------------
+GENERATED_PATH = Path(__file__).with_name("paraphrases_generated.json")
+
+
+def load_rewrites(source: str = "handwritten") -> dict[str, tuple[str, ...]]:
+    """Return the scaffold rewrite table for the requested source."""
+    if source == "handwritten":
+        return SCAFFOLD_REWRITES
+    if not GENERATED_PATH.exists():
+        raise SystemExit(
+            f"--source {source} needs {GENERATED_PATH.name}, which is not present.\n"
+            "  Generate it once:  export GEMINI_API_KEY=...\n"
+            "                     python3 tools/generate_paraphrases.py")
+    data = json.loads(GENERATED_PATH.read_text(encoding="utf-8"))
+    generated = {k: tuple(v) for k, v in data["rewrites"].items() if v}
+    if source == "generated":
+        return generated
+    if source == "both":
+        merged = {k: tuple(v) for k, v in SCAFFOLD_REWRITES.items()}
+        for phrase, options in generated.items():
+            merged[phrase] = tuple(dict.fromkeys(merged.get(phrase, ()) + options))
+        return merged
+    raise SystemExit(f"unknown --source {source!r}")
+
 # Probability of applying each optional transformation, per message.
 P_FILLER = 0.5
 P_DROP_PUNCT = 0.4
@@ -156,10 +189,12 @@ def _rng_for(seed: int, turn: int, message: str) -> random.Random:
     return random.Random(int.from_bytes(digest[:8], "big"))
 
 
-def _rewrite_scaffolding(text: str, rng: random.Random) -> str:
-    for phrase in sorted(SCAFFOLD_REWRITES, key=len, reverse=True):
+def _rewrite_scaffolding(text: str, rng: random.Random,
+                         table: dict[str, tuple[str, ...]] | None = None) -> str:
+    table = SCAFFOLD_REWRITES if table is None else table
+    for phrase in sorted(table, key=len, reverse=True):
         if phrase in text:
-            text = text.replace(phrase, rng.choice(SCAFFOLD_REWRITES[phrase]), 1)
+            text = text.replace(phrase, rng.choice(table[phrase]), 1)
     return text
 
 
@@ -234,7 +269,8 @@ LEVELS: dict[str, frozenset[str]] = {
 }
 
 
-def paraphrase(message: str, turn: int, level: str = "scaffold", seed: int = 0) -> str:
+def paraphrase(message: str, turn: int, level: str = "scaffold", seed: int = 0,
+               table: dict[str, tuple[str, ...]] | None = None) -> str:
     """Reword one customer message. Never raises; returns the input on error."""
     if not message or not message.strip():
         return message
@@ -245,7 +281,7 @@ def paraphrase(message: str, turn: int, level: str = "scaffold", seed: int = 0) 
         rng = _rng_for(seed, turn, message)
         text = message
         if "scaffold" in transforms:
-            text = _rewrite_scaffolding(text, rng)
+            text = _rewrite_scaffolding(text, rng, table)
         if "reorder" in transforms:
             text = _reorder_clauses(text, rng)
         if "synonym" in transforms:
@@ -264,30 +300,33 @@ class ParaphrasingAgent:
     them. Implements the same interface, so the evaluator cannot tell the
     difference and needs no modification."""
 
-    def __init__(self, inner, level: str = "scaffold", seed: int = 0) -> None:
+    def __init__(self, inner, level: str = "scaffold", seed: int = 0,
+                 table: dict[str, tuple[str, ...]] | None = None) -> None:
         self.inner = inner
         self.level = level
         self.seed = seed
+        self.table = table
         self.samples: list[tuple[str, str]] = []
 
     def reset(self, session_id: str, user_profile: dict) -> None:
         self.inner.reset(session_id, user_profile)
 
     def respond(self, session_id: str, user_message: str, turn: int, top_k: int) -> dict:
-        stressed = paraphrase(user_message, turn, self.level, self.seed)
+        stressed = paraphrase(user_message, turn, self.level, self.seed, self.table)
         if len(self.samples) < 12 and stressed != user_message:
             self.samples.append((user_message, stressed))
         return self.inner.respond(session_id, stressed, turn, top_k)
 
 
-def run_level(level: str | None, catalog: str, dataset: str,
-              seed: int) -> tuple[dict, list[tuple[str, str]]]:
+def run_level(level: str | None, catalog: str, dataset: str, seed: int,
+              table: dict[str, tuple[str, ...]] | None = None
+              ) -> tuple[dict, list[tuple[str, str]]]:
     samples = load_jsonl(dataset)
     catalog_ids, categories, products = catalog_index(catalog)
     agent = Agent(catalog)
     wrapper = None
     if level is not None:
-        wrapper = ParaphrasingAgent(agent, level=level, seed=seed)
+        wrapper = ParaphrasingAgent(agent, level=level, seed=seed, table=table)
         agent = wrapper
     result = evaluate(agent, samples, catalog_ids, categories, products)
     return result, (wrapper.samples if wrapper else [])
@@ -300,6 +339,9 @@ def main() -> int:
     parser.add_argument("--catalog", default="data/catalog.jsonl")
     parser.add_argument("--dataset", default="data/public_set.jsonl")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--source", choices=("handwritten", "generated", "both"),
+                        default="handwritten",
+                        help="which scaffold rewrite table to stress with")
     parser.add_argument("--save", action="store_true", help="write runs/paraphrase-<level>.json")
     parser.add_argument("--show-samples", type=int, default=6,
                         help="how many before/after message pairs to print")
@@ -313,6 +355,9 @@ def main() -> int:
     else:
         levels = [args.level]
 
+    table = load_rewrites(args.source)
+    print(f"[paraphrase] rewrite source: {args.source} "
+          f"({sum(len(v) for v in table.values())} rewrites over {len(table)} phrases)")
     print("[paraphrase] clean baseline ...")
     t = time.perf_counter()
     clean, _ = run_level(None, args.catalog, args.dataset, args.seed)
@@ -323,7 +368,7 @@ def main() -> int:
     for level in levels:
         print(f"[paraphrase] level={level} ...")
         t = time.perf_counter()
-        stressed, samples = run_level(level, args.catalog, args.dataset, args.seed)
+        stressed, samples = run_level(level, args.catalog, args.dataset, args.seed, table)
         results[level] = stressed
         print(f"[paraphrase] {level} {stressed['recommended_technical_score']:.6f} "
               f"({time.perf_counter() - t:.0f}s)")
