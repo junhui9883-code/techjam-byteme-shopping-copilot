@@ -81,7 +81,7 @@ class Agent:
     RANK_B = 0.6
     RANK_W_CATEGORY = 1.2
     RANK_W_CONSTRAINT = 2.0
-    RANK_PHRASE_EXACT = 40.0   # swept: 14->0.8553, 40->0.8600
+    RANK_PHRASE_EXACT = 20.0   # held-out: all 3 folds agree on 20 (40 was tuned pre-popularity)
     RANK_PHRASE_PREFIX = 7.0
     RANK_PHRASE_OVERLAP = 8.0
     RANK_PRICE_NEAR = 10.0
