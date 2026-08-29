@@ -87,6 +87,12 @@ class Agent:
     RANK_PRICE_NEAR = 10.0
     RANK_PRICE_LOOSE = 4.0
     RANK_PRICE_FAR = -2.0
+    # Multiplier applied to the popularity prior while the customer has
+    # disclosed NOTHING (turn-1 browsing, "still exploring"). 1.0 = flat.
+    # Two opposing intuitions, so it is measured rather than argued:
+    #   <1  the prior crowds out the little text signal there is
+    #   >1  with no constraints stated, popularity is the only signal we have
+    POPULARITY_UNINFORMED_SCALE = 1.0
     # Popularity prior weight (see src/retrieval/scoring.py). 0.0 = disabled.
     RANK_POPULARITY = 28.0   # swept: 0->0.8641, 10->0.8857, 25->0.9051, 28->0.9055, 40->0.9050
     # FTS5 recall weight set (see src/retrieval/recall.py WEIGHT_SETS).
@@ -122,7 +128,8 @@ class Agent:
             price_near_bonus=self.RANK_PRICE_NEAR,
             price_loose_bonus=self.RANK_PRICE_LOOSE,
             price_far_penalty=self.RANK_PRICE_FAR,
-            popularity=self.RANK_POPULARITY)
+            popularity=(self.RANK_POPULARITY * self.POPULARITY_UNINFORMED_SCALE
+                        if not state.constraints else self.RANK_POPULARITY))
         fallback = state.transcript if (self.RAW_FALLBACK and state.parsed_nothing) else None
         pool = candidates(self.index, state.category, state.constraints,
                           limit=self.RECALL_LIMIT,
